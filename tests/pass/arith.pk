@@ -1,0 +1,12 @@
+# Unsigned modular arithmetic, width conversion on assignment, ASCII and
+# Unicode operators, ';' as a statement separator.
+# run: 200 100 => 44 / 100 / 2 / 0 / 156 / 55
+# run: 7 0 => !1
+P1 arith (V0[:8.0], V1[:8.0]) → (R0[:8.0], R1[:8.0], R2[:8.0], R3[:8.0], R4[:8.0], R5[:8.0])
+  V0 + V1 → R0; V1 → R1
+  V0 ÷ V1 → R2
+  V0 % V1 × 0 → R3
+  -V1 + 0 → R4
+  0x137 → Z0[:16.0]; Z0 → R5          # truncated to 55 on assignment
+  V0 / V1 → Z1[:8.0]
+END

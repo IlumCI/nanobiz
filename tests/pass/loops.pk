@@ -1,0 +1,15 @@
+# W2 counts down, FIN leaves the innermost loop, i0/i1 name nested loops.
+# run: 5 => 43210 / 4 / 10
+# run: 0 => 0 / 0 / 0
+P1 loops (V0[:8.0]) -> (R0[:64.0], R1[:8.0], R2[:16.0])
+  W2(V0) [ R0 * 10 + i -> R0 ]
+  W [
+    (R1 = 4) | (R1 = V0) -> FIN
+    R1 + 1 -> R1
+  ]
+  W1(V0) [
+    W1(V0) [
+      (i1 > i0) -> R2 + 1 -> R2
+    ]
+  ]
+END

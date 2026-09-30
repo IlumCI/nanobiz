@@ -1,0 +1,16 @@
+# Maximum of three 8-bit values, in the linear notation of the
+# Plankalkuel implementation by Rojas et al. (FU Berlin, 2000).
+# run: 3 200 17 => 200
+# run: 0 0 0 => 0
+# run: 255 1 254 => 255
+# run: 1 2 256 => !1
+P1 max3 (V0[:8.0], V1[:8.0], V2[:8.0]) → R0[:8.0]
+  max(V0[:8.0], V1[:8.0]) → Z1[:8.0]
+  max(Z1[:8.0], V2[:8.0]) → R0[:8.0]
+END
+
+P2 max (V0[:8.0], V1[:8.0]) → R0[:8.0]
+  V0[:8.0] → Z1[:8.0]
+  (Z1[:8.0] < V1[:8.0]) → V1[:8.0] → Z1[:8.0]
+  Z1[:8.0] → R0[:8.0]
+END

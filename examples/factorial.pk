@@ -1,0 +1,10 @@
+# Recursive factorial on 64-bit words (wraps modulo 2^64).
+# run: 0 => 1
+# run: 1 => 1
+# run: 5 => 120
+# run: 20 => 2432902008176640000
+# run: 21 => 14197454024290336768
+P1 fact (V0[:64.0]) → R0[:64.0]
+  1 → R0
+  (V0 > 1) → V0 × fact(V0 - 1) → R0
+END

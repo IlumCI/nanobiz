@@ -1,0 +1,15 @@
+# Euclid's algorithm with a conditional repetition W (cond) [ ... ].
+# run: 1071 462 => 21
+# run: 17 0 => 17
+# run: 0 5 => 5
+# run: 4294967295 65535 => 65535
+P1 gcd (V0[:32.0], V1[:32.0]) → R0[:32.0]
+  V0 → Z0[:32.0]
+  V1 → Z1[:32.0]
+  W (Z1 ≠ 0) [
+    Z0 % Z1 → Z2[:32.0]
+    Z1 → Z0
+    Z2 → Z1
+  ]
+  Z0 → R0
+END

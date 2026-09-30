@@ -1,0 +1,20 @@
+# Number of primes below V0 (V0 <= 1000), sieve of Eratosthenes over an
+# array of 1000 bits. Intermediate variables start at zero.
+# run: 0 => 0
+# run: 2 => 0
+# run: 3 => 1
+# run: 100 => 25
+# run: 1000 => 168
+# run: 1001 => !1
+P1 primes (V0[:16.0]) → R0[:16.0]
+  W1(V0) [
+    (i ≥ 2) ∧ ¬Z0[:1000.0][i] → [
+      R0 + 1 → R0
+      i × i → Z1[:64.0]
+      W (Z1 < V0) [
+        1 → Z0[Z1]
+        Z1 + i → Z1
+      ]
+    ]
+  ]
+END

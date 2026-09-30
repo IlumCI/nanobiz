@@ -1,0 +1,11 @@
+# Command-line handling: hex input, range checks, argument count.
+# run: 0x10 3 => 19
+# run: 255 0 => 255
+# run: 256 0 => !1
+# run: abc 0 => !1
+# run: 1 => !2
+# run: 1 2 3 => !2
+# run: 1,2 3 => !1
+P1 add (V0[:8.0], V1[:32.0]) -> R0[:32.0]
+  V0 + V1 -> R0
+END

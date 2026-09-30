@@ -1,0 +1,4 @@
+# error: comparisons cannot be chained
+P1 f (V0[:8.0]) -> R0[:0]
+  1 < V0 < 3 -> R0
+END

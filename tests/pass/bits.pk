@@ -1,0 +1,14 @@
+# Bit components of words: read, write, the one-bit type 0, logic operators.
+# run: 0 => 1 / 0 / 32768
+# run: 0xFFFF => 0 / 1 / 65535
+# run: 5 => 0 / 0 / 32773
+P1 bits (V0[:16.0]) -> (R0[:0], R1[:0], R2[:16.0])
+  V0 = 0 -> R0
+  V0[0] & V0[15] -> R1
+  V0 -> R2
+  1 -> R2[15]
+  R1 -> R2[15]
+  R1 | ~V0[15] -> R2[15]
+  !V0[15] ^ R1 ^ 0 -> Z0[:0]
+  Z0 -> R2[15]
+END

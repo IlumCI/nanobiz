@@ -1,0 +1,4 @@
+# error: Z1 is used before its type is declared
+P1 f (V0[:8.0]) -> R0[:8.0]
+  Z1 -> R0
+END

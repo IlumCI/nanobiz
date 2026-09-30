@@ -1,0 +1,4 @@
+# error: input variable V0 is read-only
+P1 f (V0[:8.0]) -> R0[:8.0]
+  1 -> V0
+END

@@ -1,0 +1,3 @@
+# error: expected END closing plan f
+P1 f (V0[:8.0]) -> R0[:8.0]
+  V0 -> R0

@@ -1,0 +1,7 @@
+# error: yields 2 results; use it as
+P1 f (V0[:8.0]) -> R0[:8.0]
+  g(V0) + 1 -> R0
+END
+P2 g (V0[:8.0]) -> (R0[:8.0], R1[:8.0])
+  V0 -> R0
+END

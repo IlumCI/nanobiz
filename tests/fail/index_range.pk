@@ -1,0 +1,4 @@
+# error: component index 3 is outside 0 .. 2
+P1 f (V0[:3.8.0]) -> R0[:8.0]
+  V0[3] -> R0
+END

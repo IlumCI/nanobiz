@@ -1,0 +1,5 @@
+# error: plan number P1 is already used on line 2
+P1 f (V0[:8.0]) -> R0[:8.0]
+END
+P1 g (V0[:8.0]) -> R0[:8.0]
+END

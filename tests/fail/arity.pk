@@ -1,0 +1,7 @@
+# error: plan g expects 2 argument(s), got 1
+P1 f (V0[:8.0]) -> R0[:8.0]
+  g(V0) -> R0
+END
+P2 g (V0[:8.0], V1[:8.0]) -> R0[:8.0]
+  V0 -> R0
+END

@@ -1,0 +1,8 @@
+# Deep recursion through conditional statements.
+# run: 2 3 => 9
+# run: 3 3 => 61
+P1 ack (V0[:64.0], V1[:64.0]) -> R0[:64.0]
+  V1 + 1 -> R0
+  (V0 > 0) & (V1 = 0) -> ack(V0 - 1, 1) -> R0
+  (V0 > 0) & (V1 > 0) -> ack(V0 - 1, ack(V0, V1 - 1)) -> R0
+END

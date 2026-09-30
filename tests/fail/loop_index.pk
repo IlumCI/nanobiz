@@ -1,0 +1,4 @@
+# error: loop index i used outside a W1/W2 loop
+P1 f (V0[:8.0]) -> R0[:8.0]
+  i -> R0
+END

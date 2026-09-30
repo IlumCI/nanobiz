@@ -1,0 +1,9 @@
+# Number of set bits: a 16-bit word V0 is a structure of 16 bits V0[0..15].
+# run: 0 => 0
+# run: 0xF0F1 => 9
+# run: 65535 => 16
+P1 popcount (V0[:16.0]) → R0[:8.0]
+  W1(16) [
+    V0[i] → R0 + 1 → R0
+  ]
+END

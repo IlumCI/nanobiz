@@ -1,0 +1,4 @@
+# error: V0 has type 8.0, annotated as 16.0
+P1 f (V0[:8.0]) -> R0[:8.0]
+  V0[:16.0] -> R0
+END

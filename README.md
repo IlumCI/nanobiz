@@ -184,42 +184,93 @@ The arrow may be written `→`, `->`, `⇒` or `=>`.
 | float → word | truncated toward zero and saturated at the target's range; NaN becomes 0 |
 | float → float | extended, or rounded to nearest |
 
-## Demo: a transformer language model
+## Demo: transformer language models in Plankalkül
 
-`examples/lm/transformer.pk` (about 600 lines) is a character-level, decoder-only
-transformer written entirely in Plankalkül. It trains from scratch with hand-written
-backpropagation and then generates text autoregressively.
+`examples/lm/` contains two character-level, decoder-only language models written entirely
+in Plankalkül. They are trained from scratch with hand-written backpropagation and
+generate text autoregressively. exp, ln, √, sin/cos and the xorshift64* random generator
+are themselves Plankalkül plans built from + − × ÷, and the sigmoid is written in Zuse's
+2D notation.
 
-| Part | Choice |
-|---|---|
-| Embedding | 28-symbol vocabulary; the embedding matrix is shared with the output layer (Press & Wolf, arXiv:1608.05859) |
-| Normalization | pre-norm RMSNorm (Zhang & Sennrich, arXiv:1910.07467) |
-| Attention | causal self-attention, 2 heads, rotary position embeddings (Su et al., arXiv:2104.09864) |
-| MLP | SwiGLU (Shazeer, arXiv:2002.05202) |
-| Sizes | context 16, width 16, MLP width 32, 3056 parameters in one flat vector |
-| Optimizer | AdamW (arXiv:1711.05101) for embeddings and gains; Muon for the hidden matrices (Nesterov momentum 0.95, 5 Newton–Schulz steps, update scale 0.2·√max(A,B), decoupled weight decay; Liu et al., arXiv:2502.16982) or AdamW everywhere |
-| Schedule | warm-up, then cosine decay; gradient-norm clipping at 1; batches of 4 random windows |
-| Arithmetic | exp, ln, √, sin/cos and the xorshift64* random generator are Plankalkül plans built from + − × ÷. The sigmoid plan is written in Zuse's 2D notation. |
+| | `transformer.pk` (dense) | `recurrent.pk` (recurrent depth + Coconut) |
+|---|---|---|
+| Parameters | 132,928 | 133,184 |
+| Depth | 3 blocks | prelude + one shared core block applied r times + coda (r ∈ {2,3,4} in training): 5 blocks on average |
+| Continuous thoughts | – | Coconut: `<bot>`, latent positions, `<eot>` |
+| Vocabulary | 96 (newline + printable ASCII) | 98 (+ `<bot>`, `<eot>`) |
 
-```
-examples/lm/run.sh 600 0 muon     # steps, temperature (0 = greedy), optimizer, [seed]
-optimizer: muon, steps: 600, temperature: 0
-loss by tenth of training: 2.728…,1.294…,0.659…,0.487…,0.377…,0.320…,0.281…,0.237…,0.232…,0.198…
-prompt + generated text:   konrad zuse designed the plankalkul between nineteen fortytwo and ninete
-```
+**Shared by both models**
+- **Block:** width 64, context 32, 4 heads of 16 with rotary positions ([arXiv:2104.09864](https://arxiv.org/abs/2104.09864)), pre-norm RMSNorm ([arXiv:1910.07467](https://arxiv.org/abs/1910.07467)), SwiGLU ([arXiv:2002.05202](https://arxiv.org/abs/2002.05202)).
+- **Output layer:** tied to the embedding ([arXiv:1608.05859](https://arxiv.org/abs/1608.05859)).
+- **Optimizer:** AdamW ([arXiv:1711.05101](https://arxiv.org/abs/1711.05101)) for the embedding and norm gains; Muon for all hidden matrices ([arXiv:2502.16982](https://arxiv.org/abs/2502.16982): Nesterov momentum 0.95, 5 Newton–Schulz steps, update scale 0.2·√max(A,B), decoupled weight decay).
+- **Schedule:** warm-up, then cosine decay; gradient-norm clipping at 1; batches of 8 windows.
 
-The corpus is two sentences repeated to fill 256 characters, so the model learns to
-recite them. Training for 600 steps takes about 2 s. At this size AdamW and Muon reach
-similar losses: 0.20–0.23 after 600 steps over three seeds.
+**Recurrent depth** ([arXiv:2502.05171](https://arxiv.org/abs/2502.05171)):
+- **Recurrence:** e = Prelude(x), s₀ = 0, sₖ = Core(A·[sₖ₋₁ ; e]), y = Coda(s_r).
+- **Parameter efficiency:** the loop gives more depth per parameter, so at the dense model's parameter count it has 5 effective blocks instead of 3. It costs more compute per token.
+- **Training:** r is sampled per step, and backpropagation runs through every iteration.
+- **Inference:** any r ≤ 6 can be used.
 
-The demo is checked in three ways, all run by `tests/run.sh`:
-- **Gradient:** the entry plan `gradcheck` compares the backpropagated gradient of every
-  parameter with central differences. The largest relative error is about 1e-6, which is
-  the noise level of finite differences with h = 1e-5.
-- **Forward pass:** `examples/lm/reference.py`, an independent numpy implementation,
-  reproduces the loss at random parameters to within 1e-12, using the same random
-  generator.
-- **Training:** a 300-step run must reach a final loss below 0.8 and reproduce the corpus.
+**Coconut** ([arXiv:2412.06769](https://arxiv.org/abs/2412.06769)):
+- **Continuous thought:** the final-norm hidden state of the previous position, fed back as the input embedding instead of a character.
+- **Curriculum:** after training on written-out GSM8K solutions, stages k = 1, 2, 3 replace the first k reasoning lines of each problem with k continuous thoughts. Only the characters after `<eot>` count in the loss.
+- **Cost:** m thoughts need m + 1 sequential forward passes, and the backward pass runs through all of them. By causality all backward steps can reuse the last pass's cache.
+- **Limitation:** a thought only sees the 32 characters of its window, so this reproduces the mechanism rather than long-range latent reasoning.
+
+### Curriculum
+
+`examples/lm/data.py` downloads and prepares each stage. The reasoning-gym stage needs
+`pip install reasoning-gym`. `curriculum.sh` (dense) and `curriculum-recurrent.sh` run the
+stages; each starts from the previous stage's checkpoint, a printed parameter vector that
+reloads bit-exactly.
+
+| Stage | Data | Steps |
+|---|---|---|
+| tinystories | TinyStories ([arXiv:2305.07759](https://arxiv.org/abs/2305.07759)), 8 MiB | 12,000 |
+| reasoning | 20 [reasoning-gym](https://github.com/open-thought/reasoning-gym) generators (arithmetic, equations, syllogisms, family relations, counting, sorting, calendar, number theory, `gsm_symbolic`, …) mixed 3:1 with Open-Platypus ([arXiv:2308.07317](https://arxiv.org/abs/2308.07317)) | 12,000 |
+| gsm8k | all 7,473 GSM8K training problems with worked solutions ([arXiv:2110.14168](https://arxiv.org/abs/2110.14168)) | 16,000 (≈ 1 epoch) |
+| coconut1–3 (recurrent only) | GSM8K with the first 1–3 reasoning lines as continuous thoughts | 3 × 2,000 |
+| humanevalplus | HumanEval+ prompts and canonical solutions ([arXiv:2305.01210](https://arxiv.org/abs/2305.01210)) | 1,500 |
+
+Validation loss is measured at the end of each tenth, on held-out text of the same
+source.
+
+**Two caveats about the data:**
+- **HumanEval+:** it has no training split. A model after the humanevalplus stage has seen
+  the benchmark solutions and must not be evaluated on HumanEval or HumanEval+. During that
+  stage the validation loss is measured on GSM8K text, to track forgetting.
+- **GSM8K test split:** it is used only for a validation loss; nothing is scored on it.
+
+### Results so far (nats per character)
+
+For comparison, `baselines.py` scores n-gram models on exactly the same validation
+predictions:
+
+| Stage | Best n-gram | 23.7k dense model: validation, start → end of stage |
+|---|---|---|
+| tinystories | 1.043 (6-gram) | 1.597 → 1.276 |
+| reasoning | 0.897 (6-gram) | 1.631 → 1.185 |
+| gsm8k | 1.465 (5-gram) | 1.833 → 1.529 |
+| humanevalplus | – | 1.36 training loss; GSM8K validation 2.76 → 3.06 (forgetting) |
+
+These results are from an earlier 23,712-parameter configuration of the dense model
+(width 32, 2 layers). At this size and budget it stays behind the n-gram baselines, which
+have megabytes of training text to count. Its samples look like English, reasoning
+questions, GSM8K solutions with `<<a*b=c>>` calculator annotations, and Python, but carry
+little meaning. The 133k-parameter dense and recurrent curricula are running; their
+results will be added here.
+
+### Verification
+
+`tests/run.sh` checks both models:
+- **Gradient:** entry plans `gradcheck` (both models) and `cocogradcheck` (recurrent)
+  compare the backpropagated gradient with central differences. The largest relative error
+  is below 1e-5, including through the recurrence and through chains of continuous
+  thoughts.
+- **Forward pass:** `reference.py` and `reference_recurrent.py`, independent numpy
+  implementations, reproduce the losses to within 1e-12 (observed about 2e-15). This covers
+  the random generator and initialization.
+- **Training:** a short run of the dense model must learn to recite a small text.
 
 ## Design
 

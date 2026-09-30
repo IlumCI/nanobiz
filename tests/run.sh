@@ -55,6 +55,24 @@ if "$PLANKC" -O3 --entry gradcheck "$lm" -o "$OUT/gc" 2>"$OUT/err"; then
 else
   report fail "$lm: compile error: $(cat "$OUT/err")"
 fi
+# Recurrent-depth model with continuous thoughts (examples/lm/recurrent.pk).
+rd=examples/lm/recurrent.pk
+if "$PLANKC" -O3 --entry gradcheck "$rd" -o "$OUT/rgc" 2>"$OUT/err" \
+   && "$PLANKC" -O3 --entry cocogradcheck "$rd" -o "$OUT/cgc" 2>>"$OUT/err"; then
+  for check in "rgc text 1" "rgc text 3" "cgc coconut 2"; do
+    set -- $check
+    res=$("$OUT/$1" 11 1009 "$3"); err=$(sed -n 1p <<<"$res"); loss=$(sed -n 2p <<<"$res")
+    if awk -v e="$err" 'BEGIN { exit !(e != "" && e + 0 < 1e-4) }'; then report ok
+    else report fail "recurrent gradcheck ($2, r=$3): max relative error '$err'"; fi
+    if python3 -c 'import numpy' 2>/dev/null; then
+      ref=$(python3 examples/lm/reference_recurrent.py "$2" 11 "$3")
+      if awk -v a="$loss" -v b="$ref" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(a != "" && d < 1e-12) }'
+      then report ok; else report fail "recurrent forward ($2, r=$3): plankalkul $loss, numpy $ref"; fi
+    fi
+  done
+else
+  report fail "$rd: compile error: $(cat "$OUT/err")"
+fi
 lmout=$(examples/lm/run.sh 150 0 muon 7 2>&1)
 last=$(sed -n 's/^training loss per tenth: //p' <<<"$lmout" | awk -F, '{ print $NF }')
 if awk -v l="$last" 'BEGIN { exit !(l != "" && l < 0.8) }'; then report ok

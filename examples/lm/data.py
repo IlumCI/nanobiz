@@ -19,6 +19,15 @@ Stages
   gsm8k        GSM8K (Cobbe et al. 2021, arXiv:2110.14168), all 7473 training
                problems with their worked solutions. Validation loss is measured
                on the start of the test split (loss only; nothing is scored).
+  coconut1, coconut2, coconut3
+               continuous-thought stages for recurrent.pk (Coconut, Hao et al.
+               2024, arXiv:2412.06769): in every GSM8K training problem the
+               first k reasoning lines (k = 1, 2, 3) are replaced by <bot>, k
+               latent positions and <eot>. Written as DIR/train.records (16384
+               records "33 codes, latent mask, loss mask"; unused ones zero) and
+               DIR/train.count: per problem one window containing the thoughts
+               and one later in the answer. The loss counts the characters after
+               <eot>. Validation: the GSM8K test text, as in gsm8k.
   humanevalplus  HumanEval+ (Liu et al. 2023, arXiv:2305.01210): each prompt
                followed by its canonical solution. HumanEval+ has no training
                split: after this stage the model has seen the benchmark and can
@@ -157,7 +166,53 @@ def humanevalplus(raw):
     return train, gsm8k(raw)[1]
 
 
-STAGES = {"tinystories": tinystories, "reasoning": reasoning, "gsm8k": gsm8k,
+N_RECORDS = 1 << 14
+
+
+def coconut_records(raw, k):
+    """Latent-thought windows of GSM8K training problems (see the module doc)."""
+    rnd = random.Random(1000 + k)
+    records = []
+    for r in rows(raw, "openai/gsm8k", "main", "train"):
+        lines = r["answer"].strip().split("\n")
+        steps, final = lines[:-1], lines[-1]
+        m = min(k, len(steps))
+        head = [text.CODE[c] for c in text.normalize("Question: %s\nAnswer: " % r["question"].strip())]
+        tail = [text.CODE[c] for c in text.normalize("\n".join(steps[m:] + [final]) + "\n\n")]
+        seq = head + [text.BOT] + [0] * m + [text.EOT] + tail
+        bot = len(head)
+        eot = bot + m + 1
+        latent = set(range(bot + 1, eot))
+
+        def record(start):
+            window = seq[start:start + 33]
+            lat = sum(1 << t for t in range(32) if start + t in latent)
+            loss = sum(1 << t for t in range(32) if start + t + 1 > eot)
+            return window, lat, loss
+        if m == 0 or len(seq) < 33:
+            continue
+        # a window with the thoughts: <bot> at position 8 .. 32 - m - 8
+        b = rnd.randint(8, 32 - m - 8)
+        if bot - b >= 0 and bot - b + 33 <= len(seq):
+            records.append(record(bot - b))
+        # a window in the answer after the thoughts (none of them cut off)
+        lo, hi = eot - 8, len(seq) - 33
+        if hi >= lo:
+            start = rnd.randint(lo, hi)
+            if not (bot < start <= eot - 1):
+                records.append(record(start))
+    rnd.shuffle(records)
+    return records[:N_RECORDS]
+
+
+def coconut(k):
+    def prepare(raw):
+        return coconut_records(raw, k), gsm8k(raw)[1]
+    return prepare
+
+
+STAGES = {"coconut1": coconut(1), "coconut2": coconut(2), "coconut3": coconut(3),
+          "tinystories": tinystories, "reasoning": reasoning, "gsm8k": gsm8k,
           "humanevalplus": humanevalplus}
 
 
@@ -167,7 +222,25 @@ def main():
     out = sys.argv[2]
     raw = os.path.join(os.path.dirname(os.path.abspath(out)), "raw")
     os.makedirs(raw, exist_ok=True)
+    os.makedirs(out, exist_ok=True)
     train, val = STAGES[sys.argv[1]](raw)
+    if sys.argv[1].startswith("coconut"):
+        val = val[:N_VAL]
+        with open(os.path.join(out, "train.count"), "w") as f:
+            f.write("%d\n" % len(train))
+        with open(os.path.join(out, "train.records"), "w") as f:
+            for window, lat, loss in train:
+                f.write(" ".join(map(str, window)) + " %d %d\n" % (lat, loss))
+            f.write("0 " * 35 * (N_RECORDS - len(train)) + "\n")
+        with open(os.path.join(out, "val.codes"), "w") as f:
+            f.write(" ".join(str(text.CODE[c]) for c in val) + "\n")
+        with open(os.path.join(out, "train.txt"), "w") as f:
+            for window, lat, loss in train[:200]:
+                f.write("".join("<thought>" if lat >> t & 1 else text.NAMES.get(c) or text.SYMBOLS[c]
+                                for t, c in enumerate(window)) + "\n")
+        print("%s: %d latent-thought records, %d validation characters, in %s"
+              % (sys.argv[1], len(train), len(val), out))
+        return
     train = train[:N_MAX]
     if len(train) < 33 or len(val) < N_VAL:
         sys.exit("data.py: not enough text (%d, %d)" % (len(train), len(val)))

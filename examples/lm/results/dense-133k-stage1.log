@@ -1,0 +1,11 @@
+stage 1: tinystories, 12000 steps, peak lr 0.01, Muon, 2652 s
+training loss per tenth:   1.9956189010562657,1.5900537847656209,1.5311526858978455,1.4834038885164584,1.4427458427686946,1.408422092962776,1.35735059548054,1.3043726161996445,1.251750135077609,1.2152133713780742
+validation loss per tenth: 1.5014823749994526,1.4060066167766525,1.3906609843172506,1.315633115062775,1.2998732484078368,1.25685593307108,1.2039545805787508,1.1762583397232993,1.1357292527135083,1.1002938145942591
+--- sample (temperature 0.8) ---
+Once upon a time, there was a little fire on the story for her friend.
+
+Once upon a time, there was a big box and she had a end.
+
+Once upon a time, there was a little boy started to wate.
+
+Once upon a time, there was a little girl. She was so happy from the sad and his ar

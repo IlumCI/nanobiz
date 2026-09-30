@@ -1,0 +1,5 @@
+stage 1: tinystories, 12000 steps, peak lr 0.01, Muon, thoughts 0, 4961 s
+training loss per tenth:   2.0689881555518665,1.6913096172240765,1.6167924856676714,1.5714197618093,1.5184317845763817,1.4692873704863436,1.4088019710673412,1.343386907085432,1.2784587256666746,1.2415993177468292
+validation loss per tenth: 1.6173215729995154,1.5148596237757859,1.4876426190920689,1.376507287979366,1.374945380116645,1.3184660323590094,1.2474013007874065,1.1998332290131883,1.149501807312321,1.1244143195547631
+--- sample (temperature 0.8, r = 3) ---
+Once upon a time, there was a little special her mom tooked her mom smiled and said, "Don't worry, the window, soon you can reach a one tranked to my carefully and that right from the special turn and thought with something better to also happy and share playing it and sh

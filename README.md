@@ -250,29 +250,31 @@ source.
 Validation loss at the end of each stage. `baselines.py` scores n-gram models on exactly
 the same validation predictions.
 
-| Stage | Best n-gram | 23.7k dense (2 blocks) | 23.7k recurrent + Coconut (≈ 4 blocks) |
-|---|---|---|---|
-| tinystories | 1.043 (6-gram) | 1.276 | 1.278 |
-| reasoning | 0.897 (6-gram) | 1.185 | 1.155 |
-| gsm8k | 1.465 (5-gram) | 1.529 | 1.544 |
-| coconut1–3 | – | – | 1.747 / 1.848 / 1.882 on GSM8K text written out in full |
-| humanevalplus (GSM8K validation, forgetting) | – | 3.06 | 3.03 |
-| wall time, stages 1–3 | – | 1,122 s | 2,894 s |
+| Stage | Best n-gram | 23.7k dense (2 blocks) | 23.7k recurrent + Coconut (≈ 4 blocks) | 133k dense (3 blocks) | 133k recurrent + Coconut (≈ 5 blocks) |
+|---|---|---|---|---|---|
+| tinystories | 1.043 (6-gram) | 1.276 | 1.278 | **1.100** | 1.124 |
+| reasoning | 0.897 (6-gram) | 1.185 | 1.155 | **0.871** | running |
+| gsm8k | 1.465 (5-gram) | 1.529 | 1.544 | **1.367** | |
+| coconut1–3 | – | – | 1.747 / 1.848 / 1.882 on GSM8K text written out in full | – | |
+| humanevalplus (GSM8K validation, forgetting) | – | 3.06 | 3.03 | 2.89 | |
+| wall time, stages 1–3 | – | 1,122 s | 2,894 s | 8,844 s | stage 1: 4,961 s |
 
 **What the results show so far**
-- **Recurrent depth at 23.7k:** at equal parameters, one seed and this training budget,
-  it matches the dense model rather than beating it, at about 2.6× the compute.
-- **Coconut stages:** the model learns the format (`<bot>`, thoughts, `<eot>`, then an
-  answer-shaped continuation), and the loss on the text after `<eot>` falls from 1.75 to
+- **Scale:** 5.6× the parameters takes the dense model below the n-gram baselines on the
+  reasoning mix (0.871 against 0.897) and on GSM8K (1.367 against 1.465). It remains
+  slightly behind on TinyStories (1.100 against 1.043).
+- **Recurrent depth:** at equal parameters, one seed and this training budget, it has not
+  beaten the dense model at either size (23.7k: a tie; 133k after stage 1: 1.124 against
+  1.100), and it costs 1.9–2.6× the compute.
+- **Coconut stages (23.7k):** the model learns the format (`<bot>`, thoughts, `<eot>`, then
+  an answer-shaped continuation), and the loss on the text after `<eot>` falls from 1.75 to
   1.29. The validation loss is measured on solutions written out in full, so its rise shows
   the model moving away from that format. It does not show whether the continuous thoughts
   help; that would need an ablation on held-out Coconut records, which has not been run.
-- **Against the baselines:** both small models stay behind the n-gram baselines.
-- **Samples:** they have the right shape (stories, reasoning-gym questions, GSM8K solutions
-  with `<<a*b=c>>` annotations, Python) but carry little meaning.
-
-The 133k-parameter dense and recurrent curricula are running; their results will be added
-here.
+- **Samples from the 133k dense model:** reasoning-gym answers are formatted correctly and
+  sometimes right, for example "56*s - 262 = 2024 → 88"; the true value is 40.82, so the
+  answer is wrong but has the right form. GSM8K solutions have the right structure with
+  wrong arithmetic.
 
 ### Verification
 

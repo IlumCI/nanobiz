@@ -186,18 +186,22 @@ The arrow may be written `→`, `->`, `⇒` or `=>`.
 
 ## Demo: transformer language models in Plankalkül
 
-`examples/lm/` contains two character-level, decoder-only language models written entirely
+`examples/lm/` contains character-level, decoder-only language models written entirely
 in Plankalkül. They are trained from scratch with hand-written backpropagation and
 generate text autoregressively. exp, ln, √, sin/cos and the xorshift64* random generator
 are themselves Plankalkül plans built from + − × ÷, and the sigmoid is written in Zuse's
 2D notation.
 
-| | `transformer.pk` (dense) | `recurrent.pk` (recurrent depth + Coconut) |
-|---|---|---|
-| Parameters | 132,928 | 133,184 |
-| Depth | 3 blocks | prelude + one shared core block applied r times + coda (r ∈ {2,3,4} in training): 5 blocks on average |
-| Continuous thoughts | – | Coconut: `<bot>`, latent positions, `<eot>` |
-| Vocabulary | 96 (newline + printable ASCII) | 98 (+ `<bot>`, `<eot>`) |
+| | `transformer.pk` (dense) | `recurrent.pk` (recurrent depth + Coconut) | `recurrent-small.pk` (the same, small) |
+|---|---|---|---|
+| Parameters | 132,928 | 133,184 | 23,712 (= the earlier small dense model) |
+| Width, heads, SwiGLU width | 64, 4, 134 | 64, 4, 120 | 32, 2, 53 |
+| Depth | 3 blocks | prelude + one shared core block applied r times + coda (r ∈ {2,3,4} in training): 5 blocks on average | prelude + shared core applied r times, no coda: 4 blocks on average |
+| Continuous thoughts | – | Coconut: `<bot>`, latent positions, `<eot>` | Coconut |
+| Vocabulary | 96 (newline + printable ASCII) | 98 (+ `<bot>`, `<eot>`) | 98 |
+
+At 23.7k parameters a coda block would leave room for a SwiGLU width of only 21, so the
+small recurrent model ends with the final norm after the core instead.
 
 **Shared by both models**
 - **Block:** width 64, context 32, 4 heads of 16 with rotary positions ([arXiv:2104.09864](https://arxiv.org/abs/2104.09864)), pre-norm RMSNorm ([arXiv:1910.07467](https://arxiv.org/abs/1910.07467)), SwiGLU ([arXiv:2002.05202](https://arxiv.org/abs/2002.05202)).
@@ -221,8 +225,8 @@ are themselves Plankalkül plans built from + − × ÷, and the sigmoid is writ
 
 `examples/lm/data.py` downloads and prepares each stage. The reasoning-gym stage needs
 `pip install reasoning-gym`. `curriculum.sh` (dense) and `curriculum-recurrent.sh` run the
-stages; each starts from the previous stage's checkpoint, a printed parameter vector that
-reloads bit-exactly.
+stages (the latter takes the model file as an argument); each starts from the previous
+stage's checkpoint, a printed parameter vector that reloads bit-exactly.
 
 | Stage | Data | Steps |
 |---|---|---|
@@ -257,13 +261,13 @@ These results are from an earlier 23,712-parameter configuration of the dense mo
 (width 32, 2 layers). At this size and budget it stays behind the n-gram baselines, which
 have megabytes of training text to count. Its samples look like English, reasoning
 questions, GSM8K solutions with `<<a*b=c>>` calculator annotations, and Python, but carry
-little meaning. The 133k-parameter dense and recurrent curricula are running; their
-results will be added here.
+little meaning. The 133k-parameter dense and recurrent curricula and the 23.7k
+recurrent curriculum are running; their results will be added here.
 
 ### Verification
 
-`tests/run.sh` checks both models:
-- **Gradient:** entry plans `gradcheck` (both models) and `cocogradcheck` (recurrent)
+`tests/run.sh` checks all three models:
+- **Gradient:** entry plans `gradcheck` (all models) and `cocogradcheck` (recurrent models)
   compare the backpropagated gradient with central differences. The largest relative error
   is below 1e-5, including through the recurrence and through chains of continuous
   thoughts.

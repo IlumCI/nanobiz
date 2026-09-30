@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Train the recurrent-depth model (recurrent.pk) through a curriculum; each
-# stage starts from the checkpoint of the previous one.
+# Train a recurrent-depth model (recurrent.pk, 133184 parameters, or
+# recurrent-small.pk, 23712) through a curriculum; each stage starts from the
+# checkpoint of the previous one.
 #
 #   1 tinystories    simple English                              12000 steps, lr 0.01
 #   2 reasoning      reasoning-gym problems + Open-Platypus      12000 steps, lr 0.005
@@ -10,15 +11,17 @@
 #   6 coconut3       first 3 lines as 3 continuous thoughts        2000 steps, lr 0.003
 #   7 humanevalplus  HumanEval+ prompts + solutions               1500 steps, lr 0.003
 #
-# Stages 1-3 and 7 match curriculum.sh for comparison with the dense model.
+# Stages 1-3 and 7 match curriculum.sh for comparison with the dense models.
 # After stage 7 the model has seen HumanEval+ and must not be evaluated on it.
 #
-#   curriculum-recurrent.sh [FIRST_STAGE] [LAST_STAGE] [SCALE] [RUN]
-# Checkpoints and logs go to data/RUN (default data/curriculum-recurrent).
+#   curriculum-recurrent.sh [FIRST_STAGE] [LAST_STAGE] [SCALE] [RUN] [MODEL]
+# Checkpoints and logs go to data/RUN (default data/curriculum-recurrent);
+# MODEL is the program in examples/lm (default recurrent.pk).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 first=${1:-1}; last=${2:-7}; scale=${3:-1}; run=${4:-curriculum-recurrent}
+model=$here/${5:-recurrent.pk}
 stages=(- tinystories reasoning gsm8k coconut1 coconut2 coconut3 humanevalplus)
 steps=(- 12000 12000 16000 2000 2000 2000 1500)
 lrs=(- 0.01 0.005 0.005 0.003 0.003 0.003 0.003)
@@ -31,9 +34,9 @@ out=$root/data/$run
 mkdir -p "$out"
 py=python3; [ -x "$root/data/venv/bin/python" ] && py=$root/data/venv/bin/python
 [ -x "$root/bin/plankc" ] || (cd "$root" && gprbuild -q -P plankc.gpr)
-"$root/bin/plankc" -O3 "$here/recurrent.pk" -o "$out/stage"
-"$root/bin/plankc" -O3 --entry cocostage "$here/recurrent.pk" -o "$out/cocostage"
-"$root/bin/plankc" -O3 --entry initparams "$here/recurrent.pk" -o "$out/init"
+"$root/bin/plankc" -O3 "$model" -o "$out/stage"
+"$root/bin/plankc" -O3 --entry cocostage "$model" -o "$out/cocostage"
+"$root/bin/plankc" -O3 --entry initparams "$model" -o "$out/init"
 [ -f "$out/stage0.params" ] || "$out/init" 1 > "$out/stage0.params"
 
 for k in $(seq "$first" "$last"); do

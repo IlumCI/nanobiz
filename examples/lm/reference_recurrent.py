@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Independent numpy implementation of examples/lm/recurrent.pk.
+"""Independent numpy implementation of examples/lm/recurrent.pk and
+examples/lm/recurrent-small.pk.
 
 Reproduces the parameters and data of the entry plans `gradcheck` and
 `cocogradcheck` for a seed and recurrence r and prints the loss, which must
@@ -7,20 +8,25 @@ agree with R1 of those plans to rounding error. Checks the recurrent-depth
 forward pass (prelude, shared core with input injection, coda) and the
 Coconut passes (continuous thoughts fed back as input embeddings).
 
-usage: reference_recurrent.py text|coconut SEED R
+usage: reference_recurrent.py text|coconut SEED R [small]
 """
 import sys
 import numpy as np
 
 M64 = (1 << 64) - 1
-NV, T, D, H, DH, F = 98, 32, 64, 4, 16, 120
-LS = 2 * D + 4 * D * D + 3 * D * F                     # 39552 per block
-BASE = [NV * D + k * LS for k in range(3)]             # prelude, core, coda
-A_OFF = NV * D + 3 * LS                                # adapter, 128 x 64
+SMALL = len(sys.argv) > 4 and sys.argv[4] == "small"
+NV, T, DH = 98, 32, 16
+D, H, F, BLOCKS = (32, 2, 53, 2) if SMALL else (64, 4, 120, 3)   # prelude, core[, coda]
+LS = 2 * D + 4 * D * D + 3 * D * F                     # parameters per block
+BASE = [NV * D + k * LS for k in range(BLOCKS)]
+A_OFF = NV * D + BLOCKS * LS                           # adapter, 2D x D
 GF = A_OFF + 2 * D * D                                 # final gain
-NP = GF + D                                            # 133184
+NP = GF + D                                            # 23712 or 133184
 OFF = dict(Wq=D, Wk=D + D * D, Wv=D + 2 * D * D, Wo=D + 3 * D * D, g2=D + 4 * D * D,
            W1=2 * D + 4 * D * D, W3=2 * D + 4 * D * D + D * F, W2=2 * D + 4 * D * D + 2 * D * F)
+STD = dict(base=1 / 8, Wo=0.03952847075210474, W2=0.02886751345948129, A=0.08838834764831845)
+if SMALL:
+    STD = dict(base=0.17677669529663687, Wo=0.0625, W2=0.04856429311786321, A=0.125)
 
 
 def rng(x):
@@ -35,14 +41,14 @@ def init(seed):
     p = np.empty(NP)
     for i in range(NP):
         s, u = rng(s)
-        std = 0.125
+        std = STD["base"]
         j = (i - NV * D) % LS if NV * D <= i < A_OFF else None
         if j is not None and OFF["Wo"] <= j < OFF["g2"]:
-            std = 0.03952847075210474
+            std = STD["Wo"]
         if j is not None and j >= OFF["W2"]:
-            std = 0.02886751345948129
+            std = STD["W2"]
         if A_OFF <= i < GF:
-            std = 0.08838834764831845
+            std = STD["A"]
         p[i] = (u * 2 - 1) * 1.7320508075688772 * std
         if i >= GF or (j is not None and (j < D or OFF["g2"] <= j < OFF["W1"])):
             p[i] = 1.0
@@ -94,7 +100,8 @@ def forward(p, tokens, r, latent=None):
     s = np.zeros((T, D))
     for _ in range(r):
         s = block(p, BASE[1], np.concatenate([s, e], axis=1) @ mat(p, A_OFF, 2 * D, D))
-    nf = rmsnorm(block(p, BASE[2], s), p[GF:GF + D])
+    y = block(p, BASE[2], s) if BLOCKS == 3 else s     # the small model has no coda
+    nf = rmsnorm(y, p[GF:GF + D])
     return nf, nf @ mat(p, 0, NV, D).T
 
 

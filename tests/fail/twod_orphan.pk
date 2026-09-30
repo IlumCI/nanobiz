@@ -1,0 +1,4 @@
+# error: subscript row without a main row above it
+P1 f (V0[:8.0]) -> R0[:8.0]
+ V | 0
+END

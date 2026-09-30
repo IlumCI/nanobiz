@@ -1,0 +1,4 @@
+# error: logical operators apply to words, not floating-point numbers
+P1 f (V0[:f64]) -> R0[:f64]
+  V0 & V0 -> R0
+END

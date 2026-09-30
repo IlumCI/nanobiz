@@ -1,0 +1,4 @@
+# error: a record component must be selected by a constant
+P1 f (V0[:(0, 8.0)]) -> R0[:8.0]
+  W1(2) [ V0[i] -> R0 ]
+END

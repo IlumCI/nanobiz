@@ -1,0 +1,33 @@
+# The max3 plans of examples/max3.pk in Zuse's two-dimensional notation.
+# Rows: V = variable number, K = component, S = structure (type).
+# run: 3 200 17 => 200
+# run: 9 8 7 => 9
+P1 max3 | (V,   V,   V)   ⇒ R
+      V |  0    1    2      0
+      S |  8.0  8.0  8.0    8.0
+
+        | max(V,   V)   ⇒ Z
+      V |     0    1      1
+      S |     8.0  8.0    8.0
+
+        | max(Z,   V)   ⇒ R
+      V |     1    2      0
+      S |     8.0  8.0    8.0
+END
+
+P2 max  | (V,   V)   ⇒ R
+      V |  0    1      0
+      S |  8.0  8.0    8.0
+
+        | V   ⇒ Z
+      V | 0     1
+      S | 8.0   8.0
+
+        | (Z   < V)   → V   ⇒ Z
+      V |  1     1      1     1
+      S |  8.0   8.0    8.0   8.0
+
+        | Z   ⇒ R
+      V | 1     0
+      S | 8.0   8.0
+END

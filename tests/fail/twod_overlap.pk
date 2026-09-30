@@ -1,0 +1,6 @@
+# error: lies under more than one variable
+P1 f (V0[:8.0], V1[:8.0]) -> R0[:8.0]
+   | V+V ⇒ R
+ V | 0 1   0
+ S | 8.0.0
+END

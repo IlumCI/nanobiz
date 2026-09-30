@@ -1,0 +1,19 @@
+# Complex numbers as records (f64, f64), added component-wise in 2D
+# notation; cf. Zuse's type A13 and the example "Z + V => R".
+# run: 1.5,2 0.25,-4 => 1.75,-2 / -2
+P1 cadd | (V,         V)         ⇒ (R,         R)
+      V |  0          1             0          1
+      S |  (f64,f64)  (f64,f64)     (f64,f64)  f64
+
+        | V + V ⇒ R
+      V | 0   1   0
+      K | 0   0   0
+
+        | V + V ⇒ R
+      V | 0   1   0
+      K | 1   1   1
+
+        | R ⇒ R
+      V | 0   1
+      K | 1
+END

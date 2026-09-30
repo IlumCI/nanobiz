@@ -1,5 +1,7 @@
+with Ada.Containers.Indefinite_Ordered_Sets;
 with Ada.Containers.Vectors;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
+with Ada.Unchecked_Conversion;
 with Interfaces; use Interfaces;
 with PK.Types; use PK.Types;
 
@@ -10,10 +12,12 @@ package body PK.Codegen is
    LF : constant Character := ASCII.LF;
 
    package String_Vectors is new Ada.Containers.Vectors (Positive, Unbounded_String);
+   package String_Sets is new Ada.Containers.Indefinite_Ordered_Sets (String);
 
    function "+" (S : String) return Unbounded_String renames To_Unbounded_String;
 
    Globals     : Unbounded_String;
+   Declares    : String_Sets.Set;         --  intrinsic declarations in use
    Allocas     : Unbounded_String;
    Inits       : Unbounded_String;
    Code        : Unbounded_String;
@@ -24,8 +28,11 @@ package body PK.Codegen is
    Exit_Stack  : String_Vectors.Vector;   --  exit label of each enclosing loop
    Index_Vars  : String_Vectors.Vector;   --  index slot of each enclosing W1/W2
    Source_File : Unbounded_String;
+   Checks_On   : Boolean := True;         --  emit ASSERT statements
 
-   I64 : constant Ty := Word (64);
+   U64 : constant Ty := Word (64);
+   S64 : constant Ty := Word (64, Signed => True);
+   F64 : constant Ty := Float_Ty (64);
 
    -------------
    -- Helpers --
@@ -71,11 +78,17 @@ package body PK.Codegen is
       Append (Allocas, "  " & Name & " = alloca " & T & LF);
    end Emit_Alloca;
 
-   function Hex2 (N : Natural) return String is
+   function Hex (V : Unsigned_64; Digits_Count : Positive) return String is
       H : constant String := "0123456789ABCDEF";
+      R : String (1 .. Digits_Count);
+      X : Unsigned_64 := V;
    begin
-      return H (N / 16 + 1) & H (N mod 16 + 1);
-   end Hex2;
+      for K in reverse R'Range loop
+         R (K) := H (Natural (X and 15) + 1);
+         X := Shift_Right (X, 4);
+      end loop;
+      return R;
+   end Hex;
 
    function LLVM_String (Name, Text : String) return String is
       Esc : Unbounded_String;
@@ -84,7 +97,7 @@ package body PK.Codegen is
          if C in ' ' .. '~' and then C not in '"' | '\' then
             Append (Esc, C);
          else
-            Append (Esc, "\" & Hex2 (Character'Pos (C)));
+            Append (Esc, "\" & Hex (Unsigned_64 (Character'Pos (C)), 2));
          end if;
       end loop;
       return "@" & Name & " = private unnamed_addr constant ["
@@ -115,8 +128,12 @@ package body PK.Codegen is
       Start_Block (Ok);
    end Trap_If;
 
-   --  An integer constant of the given width, written in the signed form
-   --  the LLVM parser accepts for every width.
+   ---------------
+   -- Constants --
+   ---------------
+
+   --  An integer constant given as a bit pattern, written in the signed
+   --  form the LLVM parser accepts for every width.
    function Const (V : Unsigned_64; Width : Positive) return String is
    begin
       if Width >= 64 then
@@ -130,21 +147,74 @@ package body PK.Codegen is
       end;
    end Const;
 
-   function Max_Of (Width : Positive) return Unsigned_64 is
-     (if Width >= 64 then Unsigned_64'Last else Shift_Left (1, Width) - 1);
+   function Bits_Of is new Ada.Unchecked_Conversion (Long_Float, Unsigned_64);
+
+   --  LLVM writes float and double constants as the hexadecimal binary64
+   --  pattern; a float constant must be exactly representable in binary32.
+   function Float_Const (V : Long_Float; T : Ty) return String is
+      X : constant Long_Float := (if T.Bits = 32 then Long_Float (Float (V)) else V);
+   begin
+      return "0x" & Hex (Bits_Of (X), 16);
+   end Float_Const;
+
+   function Int_Literal (E : Expr) return String is
+   begin
+      if Is_Float (E.Ty) then
+         declare
+            M : constant Long_Float := Long_Float (E.Value);
+         begin
+            return Float_Const ((if E.Negative then -M else M), E.Ty);
+         end;
+      end if;
+      return Const ((if E.Negative then (not E.Value) + 1 else E.Value), E.Ty.Width);
+   end Int_Literal;
+
+   function Max_Of (T : Ty) return Unsigned_64 is
+     (if T.Signed then Shift_Left (1, T.Width - 1) - 1
+      elsif T.Width >= 64 then Unsigned_64'Last
+      else Shift_Left (1, T.Width) - 1);
+
+   function Min_Of (T : Ty) return Unsigned_64 is
+     ((not Shift_Left (1, T.Width - 1)) + 1);   --  -2**(w-1) as a 64-bit pattern
+
+   -----------------
+   -- Conversions --
+   -----------------
+
+   function Float_Suffix (T : Ty) return String is ("f" & Img (T.Bits));
 
    function Convert (V : String; From, To : Ty) return String is
+      T : constant String := New_Tmp;
    begin
-      if From.Width = To.Width then
-         return V;
+      if Is_Int (From) and then Is_Int (To) then
+         if From.Width = To.Width then
+            return V;
+         end if;
+         Emit (T & " = "
+               & (if From.Width > To.Width then "trunc"
+                  elsif From.Signed then "sext" else "zext")
+               & " " & LLVM (From) & " " & V & " to " & LLVM (To));
+      elsif Is_Int (From) then
+         Emit (T & " = " & (if From.Signed then "sitofp" else "uitofp")
+               & " " & LLVM (From) & " " & V & " to " & LLVM (To));
+      elsif Is_Int (To) then
+         --  Saturating conversion: out-of-range values clamp, NaN gives 0.
+         declare
+            Name : constant String :=
+              "llvm.fpto" & (if To.Signed then "si" else "ui") & ".sat."
+              & LLVM (To) & "." & Float_Suffix (From);
+         begin
+            Declares.Include ("declare " & LLVM (To) & " @" & Name & "(" & LLVM (From) & ")");
+            Emit (T & " = call " & LLVM (To) & " @" & Name & "(" & LLVM (From) & " " & V & ")");
+         end;
+      else
+         if From.Bits = To.Bits then
+            return V;
+         end if;
+         Emit (T & " = " & (if From.Bits < To.Bits then "fpext" else "fptrunc")
+               & " " & LLVM (From) & " " & V & " to " & LLVM (To));
       end if;
-      declare
-         T : constant String := New_Tmp;
-      begin
-         Emit (T & " = " & (if From.Width < To.Width then "zext " else "trunc ")
-               & LLVM (From) & " " & V & " to " & LLVM (To));
-         return T;
-      end;
+      return T;
    end Convert;
 
    function Function_Name (P : Plan) return String is ("@pk." & Label (P));
@@ -172,12 +242,14 @@ package body PK.Codegen is
    function Gen_Value (E : Expr) return String;
 
    function Gen_Index (Ix : Expr; Bound : Positive) return String is
-      W : constant String := Convert (Gen_Value (Ix), Ix.Ty, I64);
+      W : constant String := Convert (Gen_Value (Ix), Ix.Ty, (if Ix.Ty.Signed then S64 else U64));
    begin
-      --  Literal indices were checked statically; narrow index words
-      --  cannot exceed the bound.
+      --  Literal indices were checked statically; narrow unsigned index
+      --  words cannot exceed the bound. A negative signed index becomes a
+      --  huge unsigned value and fails the check.
       if Ix.Kind /= E_Int
-        and then not (Ix.Ty.Width < 24 and then 2 ** Ix.Ty.Width <= Bound)
+        and then not (not Ix.Ty.Signed and then Ix.Ty.Width < 24
+                      and then 2 ** Ix.Ty.Width <= Bound)
       then
          declare
             C : constant String := New_Tmp;
@@ -196,25 +268,41 @@ package body PK.Codegen is
    begin
       P.Addr := +Var_Addr (E);
       for Ix of E.Indices loop
-         if Cur_Ty.Kind = K_Array then
-            declare
-               I : constant String := Gen_Index (Ix, Cur_Ty.Length);
-               T : constant String := New_Tmp;
-            begin
-               Emit (T & " = getelementptr inbounds " & LLVM (Cur_Ty) & ", ptr "
-                     & To_String (P.Addr) & ", i64 0, i64 " & I);
-               P.Addr := +T;
-               Cur_Ty := Cur_Ty.Elem;
-            end;
-         else
-            P.Is_Bit := True;
-            P.Word_Ty := Cur_Ty;
-            P.Bit := +Gen_Index (Ix, Cur_Ty.Width);
-            Cur_Ty := Word (1);
-         end if;
+         case Cur_Ty.Kind is
+            when K_Array =>
+               declare
+                  I : constant String := Gen_Index (Ix, Cur_Ty.Length);
+                  T : constant String := New_Tmp;
+               begin
+                  Emit (T & " = getelementptr inbounds " & LLVM (Cur_Ty) & ", ptr "
+                        & To_String (P.Addr) & ", i64 0, i64 " & I);
+                  P.Addr := +T;
+                  Cur_Ty := Cur_Ty.Elem;
+               end;
+            when K_Record =>
+               declare
+                  K : constant Natural := Natural (Ix.Value);
+                  T : constant String := New_Tmp;
+               begin
+                  Emit (T & " = getelementptr inbounds " & LLVM (Cur_Ty) & ", ptr "
+                        & To_String (P.Addr) & ", i32 0, i32 " & Img (K));
+                  P.Addr := +T;
+                  Cur_Ty := Cur_Ty.Fields (Cur_Ty.Fields'First + K);
+               end;
+            when K_Word =>
+               P.Is_Bit := True;
+               P.Word_Ty := Cur_Ty;
+               P.Bit := +Gen_Index (Ix, Cur_Ty.Width);
+               Cur_Ty := Word (1);
+            when K_Float =>
+               raise Program_Error;   --  rejected by semantic analysis
+         end case;
       end loop;
       return P;
    end Gen_Place;
+
+   function Shift_Amount (P : Place) return String is
+     (Convert (To_String (P.Bit), U64, Word (P.Word_Ty.Width)));
 
    function Load (P : Place; T : Ty) return String is
       R : constant String := New_Tmp;
@@ -225,7 +313,7 @@ package body PK.Codegen is
       end if;
       declare
          W   : constant String := LLVM (P.Word_Ty);
-         Amt : constant String := Convert (To_String (P.Bit), I64, P.Word_Ty);
+         Amt : constant String := Shift_Amount (P);
          Sh  : constant String := New_Tmp;
          Tr  : constant String := New_Tmp;
       begin
@@ -244,7 +332,7 @@ package body PK.Codegen is
       end if;
       declare
          W       : constant String := LLVM (P.Word_Ty);
-         Amt     : constant String := Convert (To_String (P.Bit), I64, P.Word_Ty);
+         Amt     : constant String := Shift_Amount (P);
          Old     : constant String := New_Tmp;
          Mask    : constant String := New_Tmp;
          Inv     : constant String := New_Tmp;
@@ -307,44 +395,74 @@ package body PK.Codegen is
    end Gen_Call;
 
    function Gen_Binary (E : Expr) return String is
-      L : constant String := Convert (Gen_Value (E.Left), E.Left.Ty, E.Op_Ty);
-      R : constant String := Convert (Gen_Value (E.Right), E.Right.Ty, E.Op_Ty);
-      T : constant String := LLVM (E.Op_Ty);
-      X : constant String := New_Tmp;
+      L  : constant String := Convert (Gen_Value (E.Left), E.Left.Ty, E.Op_Ty);
+      R  : constant String := Convert (Gen_Value (E.Right), E.Right.Ty, E.Op_Ty);
+      OT : constant Ty := E.Op_Ty;
+      T  : constant String := LLVM (OT);
+      X  : constant String := New_Tmp;
+      Fl : constant Boolean := Is_Float (OT);
+      Sg : constant Boolean := Is_Signed (OT);
 
       procedure Arith (Op : String) is
       begin
          Emit (X & " = " & Op & " " & T & " " & L & ", " & R);
       end Arith;
 
-      procedure Cmp (Pred : String) is
+      procedure Cmp (Int_Pred, Float_Pred : String) is
       begin
-         Emit (X & " = icmp " & Pred & " " & T & " " & L & ", " & R);
+         if Fl then
+            Emit (X & " = fcmp " & Float_Pred & " " & T & " " & L & ", " & R);
+         else
+            Emit (X & " = icmp " & Int_Pred & " " & T & " " & L & ", " & R);
+         end if;
       end Cmp;
+
+      function S_U (Signed_Op, Unsigned_Op : String) return String is
+        (if Sg then Signed_Op else Unsigned_Op);
    begin
       case E.Bin_Op is
-         when Op_Add => Arith ("add");
-         when Op_Sub => Arith ("sub");
-         when Op_Mul => Arith ("mul");
+         when Op_Add => Arith (if Fl then "fadd" else "add");
+         when Op_Sub => Arith (if Fl then "fsub" else "sub");
+         when Op_Mul => Arith (if Fl then "fmul" else "mul");
          when Op_And => Arith ("and");
          when Op_Or  => Arith ("or");
          when Op_Xor => Arith ("xor");
          when Op_Div | Op_Mod =>
-            if E.Right.Kind /= E_Int then
-               declare
-                  Z : constant String := New_Tmp;
-               begin
-                  Emit (Z & " = icmp eq " & T & " " & R & ", 0");
-                  Trap_If (Z, E.Line, E.Col, "division by zero");
-               end;
+            if Fl then
+               --  IEEE 754 semantics: division by zero gives an infinity or NaN.
+               Arith (if E.Bin_Op = Op_Div then "fdiv" else "frem");
+            else
+               if E.Right.Kind /= E_Int then
+                  declare
+                     Z : constant String := New_Tmp;
+                  begin
+                     Emit (Z & " = icmp eq " & T & " " & R & ", 0");
+                     Trap_If (Z, E.Line, E.Col, "division by zero");
+                  end;
+               end if;
+               if Sg and then not (E.Right.Kind = E_Int
+                                   and then not (E.Right.Negative and then E.Right.Value = 1))
+               then
+                  declare
+                     M1 : constant String := New_Tmp;
+                     Mn : constant String := New_Tmp;
+                     Ov : constant String := New_Tmp;
+                  begin
+                     Emit (M1 & " = icmp eq " & T & " " & R & ", -1");
+                     Emit (Mn & " = icmp eq " & T & " " & L & ", "
+                           & Const (Min_Of (OT), OT.Width));
+                     Emit (Ov & " = and i1 " & M1 & ", " & Mn);
+                     Trap_If (Ov, E.Line, E.Col, "signed division overflow");
+                  end;
+               end if;
+               Arith (if E.Bin_Op = Op_Div then S_U ("sdiv", "udiv") else S_U ("srem", "urem"));
             end if;
-            Arith (if E.Bin_Op = Op_Div then "udiv" else "urem");
-         when Op_Eq => Cmp ("eq");
-         when Op_Ne => Cmp ("ne");
-         when Op_Lt => Cmp ("ult");
-         when Op_Le => Cmp ("ule");
-         when Op_Gt => Cmp ("ugt");
-         when Op_Ge => Cmp ("uge");
+         when Op_Eq => Cmp ("eq", "oeq");
+         when Op_Ne => Cmp ("ne", "une");
+         when Op_Lt => Cmp (S_U ("slt", "ult"), "olt");
+         when Op_Le => Cmp (S_U ("sle", "ule"), "ole");
+         when Op_Gt => Cmp (S_U ("sgt", "ugt"), "ogt");
+         when Op_Ge => Cmp (S_U ("sge", "uge"), "oge");
          when Op_Neg | Op_Not =>
             raise Program_Error;
       end case;
@@ -355,7 +473,9 @@ package body PK.Codegen is
    begin
       case E.Kind is
          when E_Int =>
-            return Const (E.Value, E.Ty.Width);
+            return Int_Literal (E);
+         when E_Float =>
+            return Float_Const (E.Float_Val, E.Ty);
          when E_Ref =>
             return Load (Gen_Place (E), E.Ty);
          when E_Unary =>
@@ -365,7 +485,11 @@ package body PK.Codegen is
                T : constant String := LLVM (E.Ty);
             begin
                if E.Un_Op = Op_Neg then
-                  Emit (R & " = sub " & T & " 0, " & V);
+                  if Is_Float (E.Ty) then
+                     Emit (R & " = fneg " & T & " " & V);
+                  else
+                     Emit (R & " = sub " & T & " 0, " & V);
+                  end if;
                else
                   Emit (R & " = xor " & T & " " & V & ", -1");
                end if;
@@ -426,7 +550,7 @@ package body PK.Codegen is
 
          when S_Cond =>
             declare
-               C    : constant String := Gen_Value (S.Cond);
+               C      : constant String := Gen_Value (S.Cond);
                Then_L : constant String := New_Label;
                End_L  : constant String := New_Label;
             begin
@@ -454,9 +578,9 @@ package body PK.Codegen is
 
          when S_While =>
             declare
-               Head : constant String := New_Label;
+               Head   : constant String := New_Label;
                Body_L : constant String := New_Label;
-               Done : constant String := New_Label;
+               Done   : constant String := New_Label;
             begin
                Start_Block (Head);
                declare
@@ -474,7 +598,9 @@ package body PK.Codegen is
 
          when S_Count =>
             declare
-               N      : constant String := Convert (Gen_Value (S.Count), S.Count.Ty, I64);
+               Sg     : constant Boolean := S.Count.Ty.Signed;
+               N      : constant String :=
+                 Convert (Gen_Value (S.Count), S.Count.Ty, (if Sg then S64 else U64));
                Base   : constant String := New_Tmp;
                K_Slot : constant String := Base & ".k";
                I_Slot : constant String := Base & ".i";
@@ -490,7 +616,8 @@ package body PK.Codegen is
                Emit ("store i64 0, ptr " & K_Slot);
                Start_Block (Head);
                Emit (KV & " = load i64, ptr " & K_Slot);
-               Emit (C & " = icmp ult i64 " & KV & ", " & N);
+               --  A negative signed count repeats zero times.
+               Emit (C & " = icmp " & (if Sg then "slt" else "ult") & " i64 " & KV & ", " & N);
                Emit_Term ("br i1 " & C & ", label %" & Body_L & ", label %" & Done);
                Start_Block (Body_L);
                if S.Down then
@@ -525,6 +652,18 @@ package body PK.Codegen is
 
          when S_Fin =>
             Emit_Term ("br label %" & To_String (Exit_Stack.Last_Element));
+
+         when S_Assert =>
+            if Checks_On then
+               declare
+                  C : constant String := Gen_Value (S.Assert_Cond);
+                  N : constant String := New_Tmp;
+               begin
+                  Emit (N & " = xor i1 " & C & ", true");
+                  Trap_If (N, S.Line, S.Col,
+                           "assertion failed: " & To_String (S.Assert_Text));
+               end;
+            end if;
       end case;
    end Gen_Stmt;
 
@@ -609,16 +748,60 @@ package body PK.Codegen is
                        & To_String (Sig) & ")");
    end Gen_Plan;
 
-   procedure Leaf_Paths (T : Ty; Prefix : String; Into : in out String_Vectors.Vector) is
+   ---------------------
+   -- Main and I/O    --
+   ---------------------
+
+   type Leaf_Info is record
+      Path : Unbounded_String;   --  GEP indices after "i64 0"
+      T    : Ty;
+   end record;
+
+   package Leaf_Vectors is new Ada.Containers.Vectors (Positive, Leaf_Info);
+
+   procedure Leaves (T : Ty; Prefix : String; Into : in out Leaf_Vectors.Vector) is
    begin
-      if Is_Scalar (T) then
-         Into.Append (+Prefix);
+      case T.Kind is
+         when K_Word | K_Float =>
+            Into.Append (Leaf_Info'(Path => +Prefix, T => T));
+         when K_Array =>
+            for J in 0 .. T.Length - 1 loop
+               Leaves (T.Elem, Prefix & ", i64 " & Img (J), Into);
+            end loop;
+         when K_Record =>
+            for J in T.Fields'Range loop
+               Leaves (T.Fields (J), Prefix & ", i32 " & Img (J - T.Fields'First), Into);
+            end loop;
+      end case;
+   end Leaves;
+
+   --  Read the next comma-separated value for a leaf of type T.
+   function Read_Leaf (Cur : String; T : Ty) return String is
+      V : constant String := New_Tmp;
+   begin
+      if Is_Float (T) then
+         Emit (V & " = call double @pk.next_f(ptr " & Cur & ")");
+         return Convert (V, F64, T);
+      elsif T.Signed then
+         Emit (V & " = call i64 @pk.next_s(ptr " & Cur & ", i64 " & Const (Min_Of (T), 64)
+               & ", i64 " & Const (Max_Of (T), 64) & ")");
+         return Convert (V, S64, T);
       else
-         for J in 0 .. T.Length - 1 loop
-            Leaf_Paths (T.Elem, Prefix & ", i64 " & Img (J), Into);
-         end loop;
+         Emit (V & " = call i64 @pk.next(ptr " & Cur & ", i64 " & Const (Max_Of (T), 64) & ")");
+         return Convert (V, U64, T);
       end if;
-   end Leaf_Paths;
+   end Read_Leaf;
+
+   procedure Print_Leaf (V : String; T : Ty) is
+   begin
+      if Is_Float (T) then
+         Emit ("call void @pk.print_f" & Img (T.Bits) & "(" & LLVM (T) & " " & V & ")");
+      elsif T.Signed then
+         Emit ("call void @pk.print_s(i64 " & Convert (V, T, S64) & ")");
+      else
+         Emit ("call void @pk.print(i64 " & Convert (V, T, U64) & ")");
+      end if;
+   end Print_Leaf;
 
    function Gen_Main (P : Plan) return String is
       N    : constant Natural := Natural (P.Params.Length);
@@ -646,8 +829,6 @@ package body PK.Codegen is
       for K in P.Params.First_Index .. P.Params.Last_Index loop
          declare
             X     : constant Param := P.Params (K);
-            LT    : constant Ty := Leaf (X.Ty);
-            Max   : constant String := Const (Max_Of (LT.Width), 64);
             Cur   : constant String := New_Tmp;
             Arg_P : constant String := New_Tmp;
             Arg_V : constant String := New_Tmp;
@@ -657,28 +838,22 @@ package body PK.Codegen is
             Emit (Arg_V & " = load ptr, ptr " & Arg_P);
             Emit ("store ptr " & Arg_V & ", ptr " & Cur);
             if Is_Scalar (X.Ty) then
-               declare
-                  V : constant String := New_Tmp;
-               begin
-                  Emit (V & " = call i64 @pk.next(ptr " & Cur & ", i64 " & Max & ")");
-                  Add (LLVM (X.Ty) & " " & Convert (V, I64, X.Ty));
-               end;
+               Add (LLVM (X.Ty) & " " & Read_Leaf (Cur, X.Ty));
             else
                declare
                   Storage : constant String := New_Tmp;
-                  Paths   : String_Vectors.Vector;
+                  Ls      : Leaf_Vectors.Vector;
                begin
                   Emit_Alloca (Storage, LLVM (X.Ty));
-                  Leaf_Paths (X.Ty, "", Paths);
-                  for Path of Paths loop
+                  Leaves (X.Ty, "", Ls);
+                  for L of Ls loop
                      declare
-                        V : constant String := New_Tmp;
+                        V : constant String := Read_Leaf (Cur, L.T);
                         G : constant String := New_Tmp;
                      begin
-                        Emit (V & " = call i64 @pk.next(ptr " & Cur & ", i64 " & Max & ")");
                         Emit (G & " = getelementptr inbounds " & LLVM (X.Ty) & ", ptr "
-                              & Storage & ", i64 0" & To_String (Path));
-                        Emit ("store " & LLVM (LT) & " " & Convert (V, I64, LT) & ", ptr " & G);
+                              & Storage & ", i64 0" & To_String (L.Path));
+                        Emit ("store " & LLVM (L.T) & " " & V & ", ptr " & G);
                      end;
                   end loop;
                   Add ("ptr " & Storage);
@@ -702,12 +877,11 @@ package body PK.Codegen is
       for K in P.Results.First_Index .. P.Results.Last_Index loop
          declare
             RT    : constant Ty := P.Results (K).Ty;
-            LT    : constant Ty := Leaf (RT);
-            Paths : String_Vectors.Vector;
+            Ls    : Leaf_Vectors.Vector;
             First : Boolean := True;
          begin
-            Leaf_Paths (RT, "", Paths);
-            for Path of Paths loop
+            Leaves (RT, "", Ls);
+            for L of Ls loop
                declare
                   Addr : Unbounded_String := Outs (K);
                   V    : constant String := New_Tmp;
@@ -721,12 +895,12 @@ package body PK.Codegen is
                         G : constant String := New_Tmp;
                      begin
                         Emit (G & " = getelementptr inbounds " & LLVM (RT) & ", ptr "
-                              & To_String (Outs (K)) & ", i64 0" & To_String (Path));
+                              & To_String (Outs (K)) & ", i64 0" & To_String (L.Path));
                         Addr := +G;
                      end;
                   end if;
-                  Emit (V & " = load " & LLVM (LT) & ", ptr " & To_String (Addr));
-                  Emit ("call void @pk.print(i64 " & Convert (V, LT, I64) & ")");
+                  Emit (V & " = load " & LLVM (L.T) & ", ptr " & To_String (Addr));
+                  Print_Leaf (V, L.T);
                end;
             end loop;
             Emit ("call i32 @putchar(i32 10)");
@@ -739,17 +913,23 @@ package body PK.Codegen is
    function Runtime return String is
      ("; runtime support" & LF
       & "declare i64 @strtoull(ptr, ptr, i32)" & LF
+      & "declare i64 @strtoll(ptr, ptr, i32)" & LF
+      & "declare double @strtod(ptr, ptr)" & LF
       & "declare i32 @printf(ptr, ...)" & LF
+      & "declare i32 @snprintf(ptr, i64, ptr, ...)" & LF
       & "declare i32 @dprintf(i32, ptr, ...)" & LF
       & "declare i32 @putchar(i32)" & LF
       & "declare void @exit(i32) noreturn" & LF & LF
       & LLVM_String ("pk.fmt.u64", "%llu")
+      & LLVM_String ("pk.fmt.i64", "%lld")
+      & LLVM_String ("pk.fmt.g", "%.*g")
+      & LLVM_String ("pk.fmt.s", "%s")
       & LLVM_String ("pk.fmt.err", "plankalkul runtime error: %s" & LF)
       & LLVM_String ("pk.fmt.usage",
-                     "usage: %s <%d argument(s)>; arrays are written as comma-separated values"
+                     "usage: %s <%d argument(s)>; structures are written as comma-separated values"
                      & LF)
       & LLVM_String ("pk.msg.badnum", "input: invalid or missing number")
-      & LLVM_String ("pk.msg.range", "input: value too large for its parameter type")
+      & LLVM_String ("pk.msg.range", "input: value out of range for its parameter type")
       & LLVM_String ("pk.msg.extra", "input: too many values for a parameter")
       & LF
       & "define internal void @pk.trap(ptr %msg) cold noinline noreturn {" & LF
@@ -761,6 +941,23 @@ package body PK.Codegen is
       & "  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @pk.fmt.usage, ptr %prog, i32 %n)"
       & LF
       & "  call void @exit(i32 2)" & LF
+      & "  unreachable" & LF
+      & "}" & LF & LF
+      --  Accept the character after a number (',' or end) and advance.
+      & "define internal void @pk.sep(ptr %cur, ptr %e) {" & LF
+      & "entry:" & LF
+      & "  %c = load i8, ptr %e" & LF
+      & "  %comma = icmp eq i8 %c, 44" & LF
+      & "  %nul = icmp eq i8 %c, 0" & LF
+      & "  %okc = or i1 %comma, %nul" & LF
+      & "  br i1 %okc, label %done, label %bad" & LF
+      & "done:" & LF
+      & "  %e1 = getelementptr inbounds i8, ptr %e, i64 1" & LF
+      & "  %n = select i1 %comma, ptr %e1, ptr %e" & LF
+      & "  store ptr %n, ptr %cur" & LF
+      & "  ret void" & LF
+      & "bad:" & LF
+      & "  call void @pk.trap(ptr @pk.msg.badnum)" & LF
       & "  unreachable" & LF
       & "}" & LF & LF
       & "define internal i64 @pk.next(ptr %cur, i64 %max) {" & LF
@@ -775,23 +972,63 @@ package body PK.Codegen is
       & "  %v = call i64 @strtoull(ptr %s, ptr %end, i32 0)" & LF
       & "  %e = load ptr, ptr %end" & LF
       & "  %big = icmp ugt i64 %v, %max" & LF
-      & "  br i1 %big, label %range, label %sep" & LF
-      & "sep:" & LF
-      & "  %c = load i8, ptr %e" & LF
-      & "  %comma = icmp eq i8 %c, 44" & LF
-      & "  %nul = icmp eq i8 %c, 0" & LF
-      & "  %okc = or i1 %comma, %nul" & LF
-      & "  br i1 %okc, label %done, label %bad" & LF
-      & "done:" & LF
-      & "  %e1 = getelementptr inbounds i8, ptr %e, i64 1" & LF
-      & "  %n = select i1 %comma, ptr %e1, ptr %e" & LF
-      & "  store ptr %n, ptr %cur" & LF
+      & "  br i1 %big, label %range, label %ok" & LF
+      & "ok:" & LF
+      & "  call void @pk.sep(ptr %cur, ptr %e)" & LF
       & "  ret i64 %v" & LF
       & "bad:" & LF
       & "  call void @pk.trap(ptr @pk.msg.badnum)" & LF
       & "  unreachable" & LF
       & "range:" & LF
       & "  call void @pk.trap(ptr @pk.msg.range)" & LF
+      & "  unreachable" & LF
+      & "}" & LF & LF
+      & "define internal i64 @pk.next_s(ptr %cur, i64 %min, i64 %max) {" & LF
+      & "entry:" & LF
+      & "  %end = alloca ptr" & LF
+      & "  %s = load ptr, ptr %cur" & LF
+      & "  %c0 = load i8, ptr %s" & LF
+      & "  %minus = icmp eq i8 %c0, 45" & LF
+      & "  %s1 = getelementptr inbounds i8, ptr %s, i64 1" & LF
+      & "  %ds = select i1 %minus, ptr %s1, ptr %s" & LF
+      & "  %c1 = load i8, ptr %ds" & LF
+      & "  %d1 = sub i8 %c1, 48" & LF
+      & "  %digit = icmp ult i8 %d1, 10" & LF
+      & "  br i1 %digit, label %parse, label %bad" & LF
+      & "parse:" & LF
+      & "  %v = call i64 @strtoll(ptr %s, ptr %end, i32 0)" & LF
+      & "  %e = load ptr, ptr %end" & LF
+      & "  %lo = icmp slt i64 %v, %min" & LF
+      & "  %hi = icmp sgt i64 %v, %max" & LF
+      & "  %out = or i1 %lo, %hi" & LF
+      & "  br i1 %out, label %range, label %ok" & LF
+      & "ok:" & LF
+      & "  call void @pk.sep(ptr %cur, ptr %e)" & LF
+      & "  ret i64 %v" & LF
+      & "bad:" & LF
+      & "  call void @pk.trap(ptr @pk.msg.badnum)" & LF
+      & "  unreachable" & LF
+      & "range:" & LF
+      & "  call void @pk.trap(ptr @pk.msg.range)" & LF
+      & "  unreachable" & LF
+      & "}" & LF & LF
+      & "define internal double @pk.next_f(ptr %cur) {" & LF
+      & "entry:" & LF
+      & "  %end = alloca ptr" & LF
+      & "  %s = load ptr, ptr %cur" & LF
+      & "  %c0 = load i8, ptr %s" & LF
+      & "  %blank = icmp ule i8 %c0, 32" & LF
+      & "  br i1 %blank, label %bad, label %parse" & LF
+      & "parse:" & LF
+      & "  %v = call double @strtod(ptr %s, ptr %end)" & LF
+      & "  %e = load ptr, ptr %end" & LF
+      & "  %none = icmp eq ptr %e, %s" & LF
+      & "  br i1 %none, label %bad, label %ok" & LF
+      & "ok:" & LF
+      & "  call void @pk.sep(ptr %cur, ptr %e)" & LF
+      & "  ret double %v" & LF
+      & "bad:" & LF
+      & "  call void @pk.trap(ptr @pk.msg.badnum)" & LF
       & "  unreachable" & LF
       & "}" & LF & LF
       & "define internal void @pk.end(ptr %cur) {" & LF
@@ -808,19 +1045,70 @@ package body PK.Codegen is
       & "define internal void @pk.print(i64 %v) {" & LF
       & "  %r = call i32 (ptr, ...) @printf(ptr @pk.fmt.u64, i64 %v)" & LF
       & "  ret void" & LF
+      & "}" & LF & LF
+      & "define internal void @pk.print_s(i64 %v) {" & LF
+      & "  %r = call i32 (ptr, ...) @printf(ptr @pk.fmt.i64, i64 %v)" & LF
+      & "  ret void" & LF
+      & "}" & LF & LF
+      --  Print with the smallest %.*g precision (15..17 for binary64,
+      --  6..9 for binary32) that reads back to the same value.
+      & "define internal void @pk.print_f64(double %v) {" & LF
+      & "entry:" & LF
+      & "  %buf = alloca [40 x i8]" & LF
+      & "  br label %try" & LF
+      & "try:" & LF
+      & "  %p = phi i32 [ 15, %entry ], [ %p1, %next ]" & LF
+      & "  %r1 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 40, ptr @pk.fmt.g, "
+      & "i32 %p, double %v)" & LF
+      & "  %back = call double @strtod(ptr %buf, ptr null)" & LF
+      & "  %same = fcmp oeq double %back, %v" & LF
+      & "  %last = icmp uge i32 %p, 17" & LF
+      & "  %stop = or i1 %same, %last" & LF
+      & "  br i1 %stop, label %out, label %next" & LF
+      & "next:" & LF
+      & "  %p1 = add i32 %p, 1" & LF
+      & "  br label %try" & LF
+      & "out:" & LF
+      & "  %r3 = call i32 (ptr, ...) @printf(ptr @pk.fmt.s, ptr %buf)" & LF
+      & "  ret void" & LF
+      & "}" & LF & LF
+      & "define internal void @pk.print_f32(float %f) {" & LF
+      & "entry:" & LF
+      & "  %buf = alloca [40 x i8]" & LF
+      & "  %v = fpext float %f to double" & LF
+      & "  br label %try" & LF
+      & "try:" & LF
+      & "  %p = phi i32 [ 6, %entry ], [ %p1, %next ]" & LF
+      & "  %r1 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 40, ptr @pk.fmt.g, "
+      & "i32 %p, double %v)" & LF
+      & "  %back = call double @strtod(ptr %buf, ptr null)" & LF
+      & "  %back32 = fptrunc double %back to float" & LF
+      & "  %same = fcmp oeq float %back32, %f" & LF
+      & "  %last = icmp uge i32 %p, 9" & LF
+      & "  %stop = or i1 %same, %last" & LF
+      & "  br i1 %stop, label %out, label %next" & LF
+      & "next:" & LF
+      & "  %p1 = add i32 %p, 1" & LF
+      & "  br label %try" & LF
+      & "out:" & LF
+      & "  %r3 = call i32 (ptr, ...) @printf(ptr @pk.fmt.s, ptr %buf)" & LF
+      & "  ret void" & LF
       & "}" & LF);
 
    function Generate
      (Plans       : Plan_Vectors.Vector;
       Entry_Plan  : Plan;
-      Source_Name : String) return String
+      Source_Name : String;
+      Assertions  : Boolean := True) return String
    is
       Result : Unbounded_String;
    begin
       Globals := Null_Unbounded_String;
+      Declares.Clear;
       Tmp_Count := 0;
       Label_Count := 0;
       Msg_Count := 0;
+      Checks_On := Assertions;
       Source_File := +Source_Name;
       Append (Result, "; LLVM IR generated by plankc from " & Source_Name & LF & LF);
       for P of Plans loop
@@ -829,6 +1117,9 @@ package body PK.Codegen is
       Append (Result, "; entry point: plan " & Label (Entry_Plan) & LF);
       Append (Result, Gen_Main (Entry_Plan));
       Append (Result, Runtime);
+      for D of Declares loop
+         Append (Result, D & LF);
+      end loop;
       Append (Result, To_String (Globals));
       return To_String (Result);
    end Generate;

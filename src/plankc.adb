@@ -10,11 +10,12 @@ with PK.Codegen;
 with PK.Diagnostics;
 with PK.Parser;
 with PK.Sema;
+with PK.Twodim;
 
 --  plankc: Plankalkuel compiler driver.
 procedure Plankc is
 
-   Version : constant String := "plankc 0.1.0";
+   Version : constant String := "plankc 0.2.0";
 
    Input      : Unbounded_String;
    Output     : Unbounded_String;
@@ -23,6 +24,8 @@ procedure Plankc is
    Opt_Level  : Unbounded_String := To_Unbounded_String ("-O2");
    Emit_IR    : Boolean := False;
    Keep_IR    : Boolean := False;
+   Assertions : Boolean := True;
+   Linear     : Boolean := False;
 
    Usage_Error : exception;
 
@@ -35,6 +38,8 @@ procedure Plankc is
       Put_Line ("  -O0 .. -O3      optimisation level passed to clang (default -O2)");
       Put_Line ("  --clang PATH    clang executable used to build (default: clang on PATH)");
       Put_Line ("  --keep-ll       keep the intermediate .ll file when building");
+      Put_Line ("  --no-assertions type-check ASSERT statements but do not execute them");
+      Put_Line ("  --linear        print the source translated to linear notation and stop");
       Put_Line ("  --version       print version");
    end Usage;
 
@@ -99,6 +104,10 @@ procedure Plankc is
                Clang := To_Unbounded_String (Next);
             elsif A = "--keep-ll" then
                Keep_IR := True;
+            elsif A = "--no-assertions" then
+               Assertions := False;
+            elsif A = "--linear" then
+               Linear := True;
             elsif A in "-O0" | "-O1" | "-O2" | "-O3" then
                Opt_Level := To_Unbounded_String (A);
             elsif A'Length > 1 and then A (A'First) = '-' then
@@ -152,12 +161,21 @@ begin
 
    declare
       Name   : constant String := To_String (Input);
-      Source : constant String := Read_File (Name);
+      Raw    : constant String := Read_File (Name);
       Plans  : PK.AST.Plan_Vectors.Vector;
       Main   : PK.AST.Plan;
    begin
       PK.Diagnostics.Set_File (Name);
-      Plans := PK.Parser.Parse (Source);
+      declare
+         Source : constant String := PK.Twodim.Translate (Raw);
+      begin
+         if Linear then
+            Put (Source);
+            Set_Exit_Status (Success);
+            return;
+         end if;
+         Plans := PK.Parser.Parse (Source);
+      end;
       PK.Sema.Check (Plans);
 
       if Length (Entry_Name) = 0 then
@@ -172,7 +190,7 @@ begin
 
       declare
          IR : constant String :=
-           PK.Codegen.Generate (Plans, Main, Ada.Directories.Simple_Name (Name));
+           PK.Codegen.Generate (Plans, Main, Ada.Directories.Simple_Name (Name), Assertions);
       begin
          if Emit_IR then
             Write_File ((if Length (Output) > 0 then To_String (Output)

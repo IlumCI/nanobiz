@@ -10,6 +10,7 @@ package body PK.Parser is
 
    Toks : Token_Vectors.Vector;
    Pos  : Positive := 1;
+   Src  : Unbounded_String;
 
    function Cur return Token is (Toks (Pos));
 
@@ -55,7 +56,8 @@ package body PK.Parser is
      (Is_Kw (T, "W") or else Is_Kw (T, "W1") or else Is_Kw (T, "W2"));
 
    function Is_Reserved (T : Token) return Boolean is
-     (Is_Kw (T, "END") or else Is_Kw (T, "FIN") or else Is_Loop_Kw (T));
+     (Is_Kw (T, "END") or else Is_Kw (T, "FIN") or else Is_Kw (T, "ASSERT")
+      or else Is_Loop_Kw (T));
 
    ----------
    -- Types --
@@ -64,39 +66,102 @@ package body PK.Parser is
    function Parse_Type return Ty is
       L : constant Positive := Cur.Line;
       C : constant Positive := Cur.Col;
-      N : Unsigned_64;
    begin
-      if Cur.Kind /= Tk_Int then
-         Fail ("expected a type such as 0, 8.0 or 4.16.0, found " & Describe (Cur));
-      end if;
-      N := Cur.Value;
-      Advance;
-      if Cur.Kind /= Tk_Dot then
-         if N = 0 then
-            return Word (1);
-         end if;
-         Fail ("expected '.' in type (an n-bit word is written n.0)");
-      end if;
-      if N = 0 then
-         Error (L, C, "component count in a type must be positive");
-      end if;
-      Advance;
-      if Cur.Kind = Tk_Int and then Cur.Value = 0 and then Peek.Kind /= Tk_Dot then
-         Advance;
-         if N <= Max_Width then
-            return Word (Positive (N));
-         end if;
-         --  An m-bit structure wider than a machine word is kept as an
-         --  array of m bits: its components are accessible, arithmetic is not.
-         if N > 2 ** 24 then
-            Error (L, C, "type too large");
-         end if;
-         return Arr (Positive (N), Word (1));
-      end if;
-      if N > 2 ** 24 then
-         Error (L, C, "array type too large");
-      end if;
-      return Arr (Positive (N), Parse_Type);
+      case Cur.Kind is
+         when Tk_LParen =>
+            Advance;
+            declare
+               Fields : Ty_List (1 .. 1024);
+               N      : Natural := 0;
+            begin
+               loop
+                  if N = Fields'Last then
+                     Error (L, C, "too many record components");
+                  end if;
+                  N := @ + 1;
+                  Fields (N) := Parse_Type;
+                  exit when Cur.Kind /= Tk_Comma;
+                  Advance;
+               end loop;
+               Expect (Tk_RParen, "')' closing the record type");
+               return Rec (Fields (1 .. N));
+            end;
+
+         when Tk_PlusMinus | Tk_Plus =>
+            if Cur.Kind = Tk_Plus then
+               Advance;
+               if Cur.Kind /= Tk_Minus then
+                  Fail ("expected '+-' (signed word) in type");
+               end if;
+            end if;
+            Advance;
+            declare
+               T : constant Ty := Parse_Type;
+            begin
+               if T.Kind /= K_Word then
+                  Error (L, C, "'+-' applies to words n.0 with n <= 64, not " & Image (T));
+               end if;
+               return Word (T.Width, Signed => True);
+            end;
+
+         when Tk_Ident =>
+            declare
+               S : constant String := To_String (Cur.Text);
+            begin
+               Advance;
+               if S = "f32" then
+                  return Float_Ty (32);
+               elsif S = "f64" then
+                  return Float_Ty (64);
+               elsif S = "A8" or else S = "A9" then
+                  return Word (64);
+               elsif S = "A10" then
+                  return Word (64, Signed => True);
+               elsif S = "A11" or else S = "A12" or else S = "A13" then
+                  Error (L, C, "Zuse's type " & S & " (fractions/complex numbers) is not "
+                         & "supported; use f64 or a record such as (f64, f64)");
+               else
+                  Error (L, C, "unknown type name '" & S & "'");
+               end if;
+            end;
+
+         when Tk_Int =>
+            declare
+               N : constant Unsigned_64 := Cur.Value;
+            begin
+               Advance;
+               if Cur.Kind not in Tk_Dot | Tk_Star then
+                  if N = 0 then
+                     return Word (1);
+                  end if;
+                  Fail ("expected '.' or 'x' in type (an n-bit word is written n.0)");
+               end if;
+               if N = 0 then
+                  Error (L, C, "component count in a type must be positive");
+               end if;
+               if N > 2 ** 24 then
+                  Error (L, C, "type too large");
+               end if;
+               Advance;
+               if Cur.Kind = Tk_Int and then Cur.Value = 0
+                 and then Peek.Kind not in Tk_Dot | Tk_Star
+               then
+                  Advance;
+                  if N <= Max_Width then
+                     return Word (Positive (N));
+                  end if;
+                  --  An m-bit structure wider than a machine word is kept as
+                  --  an array of m bits: components are accessible, arithmetic
+                  --  is not.
+                  return Arr (Positive (N), Word (1));
+               end if;
+               return Arr (Positive (N), Parse_Type);
+            end;
+
+         when others =>
+            Fail ("expected a type such as 0, 8.0, +-16.0, f64, 4.8.0 or (0, 8.0), found "
+                  & Describe (Cur));
+      end case;
    end Parse_Type;
 
    -----------------
@@ -135,7 +200,13 @@ package body PK.Parser is
             Advance;
             E.Decl_Annot := Parse_Type;
          else
-            E.Indices.Append (Parse_Expr);
+            --  A component path "a.b.c" selects component c of b of a.
+            loop
+               E.Indices.Append (Parse_Expr);
+               exit when Cur.Kind /= Tk_Dot;
+               E.Index_Annots.Append (null);
+               Advance;
+            end loop;
             if Cur.Kind = Tk_Colon then
                Advance;
                E.Index_Annots.Append (Parse_Type);
@@ -160,6 +231,16 @@ package body PK.Parser is
                E.Line := T.Line;
                E.Col := T.Col;
                E.Value := T.Value;
+               return E;
+            end;
+         when Tk_Float =>
+            Advance;
+            declare
+               E : constant Expr := new Expr_Node (E_Float);
+            begin
+               E.Line := T.Line;
+               E.Col := T.Col;
+               E.Float_Val := T.Float_Val;
                return E;
             end;
          when Tk_LParen =>
@@ -204,6 +285,31 @@ package body PK.Parser is
    function Parse_Unary return Expr is
       T : constant Token := Cur;
    begin
+      --  A minus sign directly before a literal makes a negative literal.
+      if T.Kind = Tk_Minus and then Peek.Kind = Tk_Int then
+         Advance;
+         declare
+            E : constant Expr := new Expr_Node (E_Int);
+         begin
+            E.Line := T.Line;
+            E.Col := T.Col;
+            E.Value := Cur.Value;
+            E.Negative := Cur.Value /= 0;
+            Advance;
+            return E;
+         end;
+      elsif T.Kind = Tk_Minus and then Peek.Kind = Tk_Float then
+         Advance;
+         declare
+            E : constant Expr := new Expr_Node (E_Float);
+         begin
+            E.Line := T.Line;
+            E.Col := T.Col;
+            E.Float_Val := -Cur.Float_Val;
+            Advance;
+            return E;
+         end;
+      end if;
       if T.Kind in Tk_Minus | Tk_Not then
          Advance;
          declare
@@ -428,7 +534,9 @@ package body PK.Parser is
    --  or "Lhs -> statement" (Lhs is a condition).
    function Parse_After_Arrow (Lhs : Expr; Line, Col : Positive) return Stmt is
    begin
-      if Cur.Kind = Tk_LBrack or else Is_Kw (Cur, "FIN") or else Is_Loop_Kw (Cur) then
+      if Cur.Kind = Tk_LBrack or else Is_Kw (Cur, "FIN") or else Is_Kw (Cur, "ASSERT")
+        or else Is_Loop_Kw (Cur)
+      then
          declare
             S : constant Stmt := New_Stmt (S_Cond, Line, Col);
          begin
@@ -480,6 +588,16 @@ package body PK.Parser is
       if Is_Kw (T, "FIN") then
          Advance;
          return New_Stmt (S_Fin, T.Line, T.Col);
+      elsif Is_Kw (T, "ASSERT") then
+         Advance;
+         declare
+            S     : constant Stmt := New_Stmt (S_Assert, T.Line, T.Col);
+            First : constant Natural := Cur.Start;
+         begin
+            S.Assert_Cond := Parse_Expr;
+            S.Assert_Text := To_Unbounded_String (Slice (Src, First, Toks (Pos - 1).Stop));
+            return S;
+         end;
       elsif Is_Loop_Kw (T) then
          return Parse_Loop;
       elsif T.Kind = Tk_LBrack then
@@ -586,6 +704,7 @@ package body PK.Parser is
    begin
       Toks := Tokenize (Source);
       Pos := 1;
+      Src := To_Unbounded_String (Source);
       loop
          while Cur.Kind in Tk_NL | Tk_Semi loop
             Advance;

@@ -1,3 +1,6 @@
+with Interfaces.C;
+with Interfaces.C.Strings;
+with System;
 with PK.Diagnostics; use PK.Diagnostics;
 
 package body PK.Lexer is
@@ -20,6 +23,21 @@ package body PK.Lexer is
    Times_U  : constant String := U2 (16#C3#, 16#97#);          --  multiplication sign
    Div_U    : constant String := U2 (16#C3#, 16#B7#);          --  division sign
    Not_U    : constant String := U2 (16#C2#, 16#AC#);          --  not sign
+   PM_U     : constant String := U2 (16#C2#, 16#B1#);          --  plus-minus sign
+
+   function C_Strtod
+     (S : Interfaces.C.Strings.chars_ptr; Endp : System.Address) return Interfaces.C.double
+     with Import, Convention => C, External_Name => "strtod";
+
+   --  Correctly rounded decimal to binary64 conversion (C library).
+   function To_Double (Text : String) return Interfaces.C.double is
+      use Interfaces.C.Strings;
+      P : chars_ptr := New_String (Text);
+      D : constant Interfaces.C.double := C_Strtod (P, System.Null_Address);
+   begin
+      Free (P);
+      return D;
+   end To_Double;
 
    function Tokenize (Source : String) return Token_Vectors.Vector is
       Result : Token_Vectors.Vector;
@@ -27,6 +45,8 @@ package body PK.Lexer is
       Line   : Positive := 1;
       Col    : Positive := 1;
       Depth  : Natural := 0;
+      Brack  : Natural := 0;
+      Types  : Boolean := False;
 
       function At_End return Boolean is (P > Source'Last);
 
@@ -56,23 +76,27 @@ package body PK.Lexer is
 
       procedure Push (K : Token_Kind; L, C : Positive; Len : Natural := 1) is
       begin
-         Result.Append (Token'(Kind => K, Line => L, Col => C, others => <>));
+         Result.Append (Token'(Kind => K, Line => L, Col => C, Start => P,
+                               Stop => P + Len - 1, others => <>));
          if Len > 0 then
             Adv (Len);
          end if;
       end Push;
 
       procedure Lex_Number is
-         L    : constant Positive := Line;
-         C    : constant Positive := Col;
-         Base : Unsigned_64 := 10;
-         V    : Unsigned_64 := 0;
-         Seen : Boolean := False;
+         L     : constant Positive := Line;
+         C     : constant Positive := Col;
+         First : constant Positive := P;
+         Base  : Unsigned_64 := 10;
+         V     : Unsigned_64 := 0;
+         Seen  : Boolean := False;
       begin
-         if Ch = '0' and then Ch (1) in 'b' | 'B' and then Ch (2) in '0' .. '1' then
+         if not Types and then Ch = '0' and then Ch (1) in 'b' | 'B'
+           and then Ch (2) in '0' .. '1'
+         then
             Base := 2;
             Adv (2);
-         elsif Ch = '0' and then Ch (1) in 'x' | 'X'
+         elsif not Types and then Ch = '0' and then Ch (1) in 'x' | 'X'
            and then Ch (2) in '0' .. '9' | 'a' .. 'f' | 'A' .. 'F'
          then
             Base := 16;
@@ -102,11 +126,61 @@ package body PK.Lexer is
                end if;
             end;
          end loop;
-         if Is_Letter (Ch) or else Is_Digit (Ch) then
+
+         --  Floating-point literal: digits '.' digits [exponent] or
+         --  digits exponent; only outside brackets and types.
+         if Base = 10 and then not Types and then Brack = 0
+           and then ((Ch = '.' and then Is_Digit (Ch (1)))
+                     or else (Ch in 'e' | 'E'
+                              and then (Is_Digit (Ch (1))
+                                        or else (Ch (1) in '+' | '-'
+                                                 and then Is_Digit (Ch (2))))))
+         then
+            if Ch = '.' then
+               Adv;
+               while Is_Digit (Ch) or else Ch = '_' loop
+                  Adv;
+               end loop;
+            end if;
+            if Ch in 'e' | 'E'
+              and then (Is_Digit (Ch (1))
+                        or else (Ch (1) in '+' | '-' and then Is_Digit (Ch (2))))
+            then
+               Adv (if Is_Digit (Ch (1)) then 1 else 2);
+               while Is_Digit (Ch) loop
+                  Adv;
+               end loop;
+            end if;
+            if Is_Letter (Ch) or else Is_Digit (Ch) then
+               Error (Line, Col, "malformed floating-point literal");
+            end if;
+            declare
+               Text : Unbounded_String;
+            begin
+               for X of Source (First .. P - 1) loop
+                  if X /= '_' then
+                     Append (Text, X);
+                  end if;
+               end loop;
+               declare
+                  D : constant Interfaces.C.double := To_Double (To_String (Text));
+               begin
+                  if not D'Valid then
+                     Error (L, C, "floating-point literal out of range");
+                  end if;
+                  Result.Append (Token'(Kind => Tk_Float, Line => L, Col => C,
+                                        Float_Val => Long_Float (D),
+                                        Start => First, Stop => P - 1, others => <>));
+               end;
+            end;
+            return;
+         end if;
+
+         if not Types and then (Is_Letter (Ch) or else Is_Digit (Ch)) then
             Error (Line, Col, "malformed integer literal");
          end if;
          Result.Append (Token'(Kind => Tk_Int, Line => L, Col => C, Value => V,
-                               others => <>));
+                               Start => First, Stop => P - 1, others => <>));
       end Lex_Number;
 
       procedure Lex_Word is
@@ -130,11 +204,12 @@ package body PK.Lexer is
                  (Token'(Kind => Tk_Var, Line => L, Col => C,
                          Var_Class => S (S'First),
                          Var_Index => Natural'Value (S (S'First + 1 .. S'Last)),
-                         others => <>));
+                         Start => Start, Stop => P - 1, others => <>));
             else
                Result.Append
                  (Token'(Kind => Tk_Ident, Line => L, Col => C,
-                         Text => To_Unbounded_String (S), others => <>));
+                         Text => To_Unbounded_String (S),
+                         Start => Start, Stop => P - 1, others => <>));
             end if;
          end;
       end Lex_Word;
@@ -160,6 +235,10 @@ package body PK.Lexer is
                end loop;
             elsif Is_Digit (C) then
                Lex_Number;
+            elsif Types and then C = 'x' and then not Result.Is_Empty
+              and then Result.Last_Element.Kind = Tk_Int
+            then
+               Push (Tk_Star, L, Cl);
             elsif Is_Letter (C) then
                Lex_Word;
             elsif Looking_At ("->") or else Looking_At ("=>") then
@@ -190,6 +269,8 @@ package body PK.Lexer is
                Push (Tk_Slash, L, Cl, 2);
             elsif Looking_At (Not_U) then
                Push (Tk_Not, L, Cl, 2);
+            elsif Looking_At (PM_U) then
+               Push (Tk_PlusMinus, L, Cl, 2);
             else
                case C is
                   when '(' =>
@@ -200,9 +281,18 @@ package body PK.Lexer is
                         Depth := @ - 1;
                      end if;
                      Push (Tk_RParen, L, Cl);
-                  when '[' => Push (Tk_LBrack, L, Cl);
-                  when ']' => Push (Tk_RBrack, L, Cl);
-                  when ':' => Push (Tk_Colon, L, Cl);
+                  when '[' =>
+                     Brack := @ + 1;
+                     Push (Tk_LBrack, L, Cl);
+                  when ']' =>
+                     if Brack > 0 then
+                        Brack := @ - 1;
+                     end if;
+                     Types := False;
+                     Push (Tk_RBrack, L, Cl);
+                  when ':' =>
+                     Types := True;
+                     Push (Tk_Colon, L, Cl);
                   when ',' => Push (Tk_Comma, L, Cl);
                   when ';' => Push (Tk_Semi, L, Cl);
                   when '.' => Push (Tk_Dot, L, Cl);
@@ -232,6 +322,8 @@ package body PK.Lexer is
    function Describe (T : Token) return String is
      (case T.Kind is
          when Tk_Int     => "integer " & Img_U (T.Value),
+         when Tk_Float   => "floating-point literal",
+         when Tk_PlusMinus => "'+-'",
          when Tk_Ident   => "'" & To_String (T.Text) & "'",
          when Tk_Var     => "variable " & T.Var_Class & Img (T.Var_Index),
          when Tk_Arrow   => "'->'",

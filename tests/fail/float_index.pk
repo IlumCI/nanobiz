@@ -1,0 +1,5 @@
+# error: a component index must be a word, not a value of type f64
+P1 f (V0[:4.8.0]) -> R0[:8.0]
+  1.5 -> Z0[:f64]
+  V0[Z0] -> R0
+END

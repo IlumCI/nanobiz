@@ -1,0 +1,4 @@
+# error: Zuse's type A12 (fractions/complex numbers) is not supported
+P1 f (V0[:A12]) -> R0[:0]
+  1 -> R0
+END

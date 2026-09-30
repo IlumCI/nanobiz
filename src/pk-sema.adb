@@ -25,16 +25,58 @@ package body PK.Sema is
       return null;
    end Find_Plan;
 
-   function Fits (V : Unsigned_64; Width : Positive) return Boolean is
-     (Width >= 64 or else V < Shift_Left (1, Width));
+   --  Does the literal (magnitude V, sign Negative) fit in word type T?
+   function Fits (V : Unsigned_64; Negative : Boolean; T : Ty) return Boolean is
+   begin
+      if not T.Signed then
+         return not Negative and then (T.Width >= 64 or else V < Shift_Left (1, T.Width));
+      end if;
+      declare
+         Half : constant Unsigned_64 := Shift_Left (1, T.Width - 1);
+      begin
+         return (if Negative then V <= Half else V < Half);
+      end;
+   end Fits;
+
+   function Literal_Image (E : Expr) return String is
+     ((if E.Negative then "-" else "") & Img_U (E.Value));
 
    procedure Require_Scalar (T : Ty; At_Expr : Expr; What : String) is
    begin
       if not Is_Scalar (T) then
          Error (At_Expr.Line, At_Expr.Col,
-                What & " must be a word, not an array of type " & Image (T));
+                What & " must be a number, not a structure of type " & Image (T));
       end if;
    end Require_Scalar;
+
+   procedure Require_Int (T : Ty; At_Expr : Expr; What : String) is
+   begin
+      if not Is_Int (T) then
+         Error (At_Expr.Line, At_Expr.Col,
+                What & " must be a word, not a value of type " & Image (T));
+      end if;
+   end Require_Int;
+
+   --  Type in which a binary operation on A and B is carried out.
+   --  Any float operand makes the operation floating point. Mixed signed
+   --  and unsigned words are widened to a signed word that holds both
+   --  value ranges (at most 64 bits).
+   function Common (A, B : Ty) return Ty is
+   begin
+      if Is_Float (A) or else Is_Float (B) then
+         return Float_Ty (Positive'Max ((if Is_Float (A) then A.Bits else 32),
+                                        (if Is_Float (B) then B.Bits else 32)));
+      elsif A.Signed = B.Signed then
+         return Word (Positive'Max (A.Width, B.Width), A.Signed);
+      else
+         declare
+            S : constant Ty := (if A.Signed then A else B);
+            U : constant Ty := (if A.Signed then B else A);
+         begin
+            return Word (Positive'Min (64, Positive'Max (S.Width, U.Width + 1)), True);
+         end;
+      end if;
+   end Common;
 
    function Check_Expr (E : Expr; Expected : Ty) return Ty;
 
@@ -99,7 +141,10 @@ package body PK.Sema is
                It    : constant Ty := Check_Expr (Ix, null);
                Bound : Positive;
             begin
-               Require_Scalar (It, Ix, "a component index");
+               Require_Int (It, Ix, "a component index");
+               if Ix.Kind = E_Int and then Ix.Negative then
+                  Error (Ix.Line, Ix.Col, "component index must not be negative");
+               end if;
                case Cur_Ty.Kind is
                   when K_Array =>
                      Bound := Cur_Ty.Length;
@@ -110,6 +155,18 @@ package body PK.Sema is
                      end if;
                      Bound := Cur_Ty.Width;
                      Cur_Ty := Word (1);
+                  when K_Float =>
+                     Error (Ix.Line, Ix.Col, "cannot select a component of a floating-point "
+                            & "number");
+                  when K_Record =>
+                     if Ix.Kind /= E_Int then
+                        Error (Ix.Line, Ix.Col, "a record component must be selected by a "
+                               & "constant");
+                     end if;
+                     Bound := Cur_Ty.Fields'Length;
+                     if Ix.Value < Unsigned_64 (Bound) then
+                        Cur_Ty := Cur_Ty.Fields (Cur_Ty.Fields'First + Natural (Ix.Value));
+                     end if;
                end case;
                if Ix.Kind = E_Int and then Ix.Value >= Unsigned_64 (Bound) then
                   Error (Ix.Line, Ix.Col, "component index " & Img_U (Ix.Value)
@@ -166,6 +223,8 @@ package body PK.Sema is
       E.Target := P;
    end Check_Call;
 
+   function Is_Literal (E : Expr) return Boolean is (E.Kind in E_Int | E_Float);
+
    procedure Check_Binary (E : Expr; Expected : Ty) is
       Pass : constant Ty :=
         (if Expected /= null and then Is_Scalar (Expected)
@@ -174,11 +233,11 @@ package body PK.Sema is
       LT, RT : Ty;
    begin
       --  An untyped literal takes the type of the other operand.
-      if E.Left.Kind = E_Int and then E.Right.Kind /= E_Int then
+      if Is_Literal (E.Left) and then not Is_Literal (E.Right) then
          RT := Check_Expr (E.Right, null);
          Require_Scalar (RT, E.Right, "an operand");
          LT := Check_Expr (E.Left, RT);
-      elsif E.Right.Kind = E_Int and then E.Left.Kind /= E_Int then
+      elsif Is_Literal (E.Right) and then not Is_Literal (E.Left) then
          LT := Check_Expr (E.Left, null);
          Require_Scalar (LT, E.Left, "an operand");
          RT := Check_Expr (E.Right, LT);
@@ -188,10 +247,15 @@ package body PK.Sema is
       end if;
       Require_Scalar (LT, E.Left, "an operand");
       Require_Scalar (RT, E.Right, "an operand");
-      if E.Bin_Op in Op_Div | Op_Mod and then E.Right.Kind = E_Int and then E.Right.Value = 0 then
+      E.Op_Ty := Common (LT, RT);
+      if Is_Float (E.Op_Ty) and then E.Bin_Op in Op_And | Op_Or | Op_Xor then
+         Error (E.Line, E.Col, "logical operators apply to words, not floating-point numbers");
+      end if;
+      if Is_Int (E.Op_Ty) and then E.Bin_Op in Op_Div | Op_Mod
+        and then E.Right.Kind = E_Int and then E.Right.Value = 0
+      then
          Error (E.Right.Line, E.Right.Col, "division by zero");
       end if;
-      E.Op_Ty := Word (Positive'Max (LT.Width, RT.Width));
       E.Ty := (if E.Bin_Op in Compare_Op then Word (1) else E.Op_Ty);
    end Check_Binary;
 
@@ -199,14 +263,27 @@ package body PK.Sema is
    begin
       case E.Kind is
          when E_Int =>
-            if Expected /= null and then Is_Scalar (Expected) then
-               if not Fits (E.Value, Expected.Width) then
-                  Error (E.Line, E.Col, "literal " & Img_U (E.Value)
+            if Expected /= null and then Is_Float (Expected) then
+               E.Ty := Expected;
+            elsif Expected /= null and then Is_Int (Expected) then
+               if not Fits (E.Value, E.Negative, Expected) then
+                  Error (E.Line, E.Col, "literal " & Literal_Image (E)
                          & " does not fit in type " & Image (Expected));
                end if;
                E.Ty := Expected;
+            elsif E.Negative then
+               if E.Value > 2 ** 63 then
+                  Error (E.Line, E.Col, "literal " & Literal_Image (E) & " exceeds 64 bits");
+               end if;
+               E.Ty := Word (64, Signed => True);
             else
                E.Ty := Word (64);
+            end if;
+         when E_Float =>
+            E.Ty := (if Expected /= null and then Is_Float (Expected) then Expected
+                     else Float_Ty (64));
+            if E.Ty.Bits = 32 and then abs E.Float_Val > Long_Float (Float'Last) then
+               Error (E.Line, E.Col, "literal does not fit in type f32");
             end if;
          when E_Ref =>
             Check_Ref (E, False);
@@ -215,6 +292,10 @@ package body PK.Sema is
                T : constant Ty := Check_Expr (E.Operand, Expected);
             begin
                Require_Scalar (T, E.Operand, "an operand");
+               if E.Un_Op = Op_Not and then Is_Float (T) then
+                  Error (E.Line, E.Col, "logical negation applies to words, not "
+                         & "floating-point numbers");
+               end if;
                E.Ty := T;
             end;
          when E_Binary =>
@@ -246,7 +327,7 @@ package body PK.Sema is
    procedure Check_Cond (C : Expr) is
       T : constant Ty := Check_Expr (C, Word (1));
    begin
-      if not Same (T, Word (1)) then
+      if not Is_Bit (T) then
          Error (C.Line, C.Col, "a condition must have type 0 (one bit), not " & Image (T));
       end if;
    end Check_Cond;
@@ -306,7 +387,7 @@ package body PK.Sema is
             Check_Stmts (S.While_Body);
             Any_Depth := @ - 1;
          when S_Count =>
-            Require_Scalar (Check_Expr (S.Count, null), S.Count, "a repetition count");
+            Require_Int (Check_Expr (S.Count, null), S.Count, "a repetition count");
             Any_Depth := @ + 1;
             Count_Depth := @ + 1;
             Check_Stmts (S.Count_Body);
@@ -316,6 +397,8 @@ package body PK.Sema is
             if Any_Depth = 0 then
                Error (S.Line, S.Col, "FIN outside a W loop");
             end if;
+         when S_Assert =>
+            Check_Cond (S.Assert_Cond);
       end case;
    end Check_Stmt;
 

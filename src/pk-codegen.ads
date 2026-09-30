@@ -10,12 +10,18 @@ with PK.AST;
 --  stack slots; LLVM's mem2reg/SROA passes promote them to SSA registers.
 --
 --  A C-ABI @main reads the entry plan's parameters from the command line
---  (arrays as comma-separated values) and prints each result on a line.
+--  (structures as comma-separated leaf values) and prints each result on
+--  a line. A floating-point result is printed with the smallest %g
+--  precision (15..17 for binary64, 6..9 for binary32) that reads back to
+--  the same value.
 package PK.Codegen is
 
    function Generate
      (Plans       : PK.AST.Plan_Vectors.Vector;
       Entry_Plan  : PK.AST.Plan;
-      Source_Name : String) return String;
+      Source_Name : String;
+      Assertions  : Boolean := True) return String;
+   --  With Assertions False, ASSERT statements are type-checked but emit
+   --  no code.
 
 end PK.Codegen;

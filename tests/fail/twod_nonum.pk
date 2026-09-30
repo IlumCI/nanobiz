@@ -1,0 +1,6 @@
+# error: variable Z has no number in the V row
+P1 f (V0[:8.0]) -> R0[:8.0]
+   | V ⇒ Z
+ V | 0
+ S | 8.0 8.0
+END

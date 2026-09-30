@@ -1,0 +1,15 @@
+# Signed words (+-n.0 and Zuse's A10): arithmetic, comparison, division,
+# widening by sign extension, mixed signed/unsigned comparison.
+# run: -7 2 => -3 / -1 / -14 / 1 / -7 / 249
+# run: 7 -2 => -3 / 1 / -14 / 0 / 7 / 7
+# run: -128 -1 => !1
+# run: -129 1 => !1
+# run: 5 0 => !1
+P1 signed (V0[:±8.0], V1[:+-8.0]) -> (R0[:±8.0], R1[:±8.0], R2[:A10], R3[:0], R4[:±64.0], R5[:8.0])
+  V0 / V1 -> R0
+  V0 % V1 -> R1
+  V0 × V1 -> R2
+  V0 < V1 -> R3
+  V0 -> R4
+  V0 -> R5
+END

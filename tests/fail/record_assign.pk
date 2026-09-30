@@ -1,0 +1,4 @@
+# error: cannot assign a value of type (0, 8.0) to R0 of type (8.0, 0)
+P1 f (V0[:(0, 8.0)]) -> R0[:(8.0, 0)]
+  V0 -> R0
+END

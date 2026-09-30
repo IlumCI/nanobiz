@@ -1,4 +1,4 @@
-# error: an operand must be a word, not an array of type 2.8.0
+# error: an operand must be a number, not a structure of type 2.8.0
 P1 f (V0[:2.8.0]) -> R0[:8.0]
   V0 + 1 -> R0
 END

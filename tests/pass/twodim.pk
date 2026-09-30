@@ -1,0 +1,18 @@
+# 2D notation: component paths in the K row, loop index i with a V entry,
+# mixing 2D blocks and linear lines, comments in 2D rows.
+# run: 1,2,3,4 => 10 / 4
+P1 sum | (V)        ⇒ (R,     R)
+     V |  0            0      1
+     S |  2.2.8.0      16.0   8.0
+  W1(2) [
+    W1(2) [
+       | R + V       ⇒ R        # accumulate
+     V | 0   0         0
+     K |     i0.i1
+     A |              
+    ]
+  ]
+       | V ⇒ R
+     V | 0   1
+     K | 1.1
+END

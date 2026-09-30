@@ -1,0 +1,4 @@
+# error: cannot select a component of a floating-point number
+P1 f (V0[:f64]) -> R0[:0]
+  V0[0] -> R0
+END

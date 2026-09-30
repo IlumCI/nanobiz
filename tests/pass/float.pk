@@ -1,0 +1,17 @@
+# Floating point: Newton's method for the square root, mixed int/float
+# arithmetic, f32, saturating conversion to words, IEEE division by zero.
+# run: 2 => 1.414213562373095 / 1.4142135 / 1 / 255 / inf
+# run: 0.25 => 0.5 / 0.5 / 0 / 255 / inf
+# run: -1 => !1
+# run: x => !1
+P1 root (V0[:f64]) -> (R0[:f64], R1[:f32], R2[:8.0], R3[:8.0], R4[:f64])
+  ASSERT V0 >= 0.0
+  (V0 > 1) -> V0 -> Z0[:f64]
+  (V0 <= 1) -> 1.0 -> Z0
+  W1(60) [ (Z0 + V0 / Z0) / 2 -> Z0 ]
+  Z0 -> R0
+  Z0 -> R1
+  Z0 -> R2
+  1.0e10 -> R3
+  1 / (V0 - V0) -> R4
+END

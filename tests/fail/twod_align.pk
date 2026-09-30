@@ -1,0 +1,5 @@
+# error: is not under a variable letter of the main row
+P1 f | (V) ⇒ R
+   V |  0    0
+   S |  8.0      8.0
+END

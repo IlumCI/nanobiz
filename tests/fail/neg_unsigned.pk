@@ -1,0 +1,4 @@
+# error: literal -1 does not fit in type 8.0
+P1 f (V0[:8.0]) -> R0[:8.0]
+  -1 -> R0
+END

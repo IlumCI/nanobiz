@@ -1,0 +1,4 @@
+# error: a condition must have type 0 (one bit), not 8.0
+P1 f (V0[:8.0]) -> R0[:8.0]
+  ASSERT V0
+END

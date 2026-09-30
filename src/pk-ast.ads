@@ -30,14 +30,17 @@ package PK.AST is
    package Expr_Vectors is new Ada.Containers.Vectors (Positive, Expr);
    package Ty_Vectors is new Ada.Containers.Vectors (Positive, PK.Types.Ty);
 
-   type Expr_Kind is (E_Int, E_Ref, E_Unary, E_Binary, E_Call);
+   type Expr_Kind is (E_Int, E_Float, E_Ref, E_Unary, E_Binary, E_Call);
 
    type Expr_Node (Kind : Expr_Kind) is record
       Line, Col : Positive := 1;
       Ty        : PK.Types.Ty;                --  set by semantic analysis
       case Kind is
          when E_Int =>
-            Value : Interfaces.Unsigned_64 := 0;
+            Value    : Interfaces.Unsigned_64 := 0;   --  magnitude
+            Negative : Boolean := False;
+         when E_Float =>
+            Float_Val : Long_Float := 0.0;
          when E_Ref =>
             Class        : Var_Class := C_Z;
             Index        : Integer := 0;       --  -1 for the bare loop index i
@@ -72,7 +75,8 @@ package PK.AST is
       S_Loop,     --  W [ ... ]              repeat until FIN
       S_While,    --  W (Cond) [ ... ]
       S_Count,    --  W1 (n) [ ... ] / W2 (n) [ ... ]
-      S_Fin);     --  FIN                    leave the innermost loop
+      S_Fin,      --  FIN                    leave the innermost loop
+      S_Assert);  --  ASSERT cond            checked at run time
 
    type Stmt_Node (Kind : Stmt_Kind) is record
       Line, Col : Positive := 1;
@@ -94,6 +98,9 @@ package PK.AST is
             Count_Body : Stmt_Vectors.Vector;
          when S_Fin =>
             null;
+         when S_Assert =>
+            Assert_Cond : Expr;
+            Assert_Text : Unbounded_String;   --  source text of the condition
       end case;
    end record;
 

@@ -1,0 +1,13 @@
+# Negative literals, wrap-around, signed loop counts, mixed comparisons.
+# run: 3 => 0 / 127 / -1 / 1
+# run: -5 => 0 / 127 / -1 / 1
+P1 ops (V0[:±16.0]) -> (R0[:64.0], R1[:±8.0], R2[:±8.0], R3[:0])
+  W1(V0) [ R0 + 1 -> R0 ]
+  (V0 < 0) -> R0 - R0 -> R0
+  (V0 > 0) -> R0 - 3 -> R0
+  -128 -> R1
+  R1 - 1 -> R1
+  -1 -> R2
+  200 -> Z0[:8.0]
+  Z0 > R2 -> R3
+END

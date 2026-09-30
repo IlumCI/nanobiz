@@ -1,0 +1,16 @@
+# Records with mixed component types, arrays of records, records as plan
+# parameters and results (complex addition, cf. Zuse's A13 example).
+# run: 1.5,-2,3 0.5,4,1 => 2,2,1 / -2,-9 / 1.5
+P1 main (V0[:(f64, ±8.0, 8.0)], V1[:(f64, ±8.0, 8.0)]) -> (R0[:(f64, ±8.0, 0)], R1[:2x(±8.0)], R2[:f64])
+  cadd(V0, V1) -> Z0[:(f64, ±8.0, 0)]
+  Z0 -> R0
+  V0[1] -> R1[0.0]
+  V1[1] × V0[1] - 1 -> R1[1][0]
+  V0[0:f64] -> R2
+END
+
+P2 cadd (V0[:(f64, ±8.0, 8.0)], V1[:(f64, ±8.0, 8.0)]) -> R0[:(f64, ±8.0, 0)]
+  V0[0] + V1[0] -> R0[0]
+  V0[1] + V1[1] -> R0[1]
+  V0[2] > V1[2] -> R0[2]
+END

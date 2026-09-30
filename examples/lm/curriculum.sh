@@ -9,21 +9,21 @@
 #
 # After stage 4 the model has seen HumanEval+ and must not be evaluated on it.
 #
-#   curriculum.sh [FIRST_STAGE] [LAST_STAGE] [SCALE]
+#   curriculum.sh [FIRST_STAGE] [LAST_STAGE] [SCALE] [RUN]
 # SCALE multiplies every stage's step count (default 1). Checkpoints and logs
-# go to data/curriculum; stage k continues from data/curriculum/stage$((k-1)).params
-# (stage 0 = initialisation).
+# go to data/RUN (default data/curriculum); stage k continues from
+# data/RUN/stage$((k-1)).params (stage 0 = initialisation).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-first=${1:-1}; last=${2:-4}; scale=${3:-1}
+first=${1:-1}; last=${2:-4}; scale=${3:-1}; run=${4:-curriculum}
 stages=(- tinystories reasoning gsm8k humanevalplus)
 steps=(- 12000 12000 16000 1500)
 lrs=(- 0.01 0.005 0.005 0.003)
 prompts=(- "Once upon a time" "Question: What i" "Question: A shop" $'def area(w, h):\n')
 ulimit -s unlimited 2>/dev/null || ulimit -s 262144
 
-out=$root/data/curriculum
+out=$root/data/$run
 mkdir -p "$out"
 py=python3; [ -x "$root/data/venv/bin/python" ] && py=$root/data/venv/bin/python
 [ -x "$root/bin/plankc" ] || (cd "$root" && gprbuild -q -P plankc.gpr)

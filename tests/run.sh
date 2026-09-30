@@ -7,6 +7,7 @@
 set -u
 cd "$(dirname "$0")/.."
 PLANKC=${PLANKC:-bin/plankc}
+ulimit -s unlimited 2>/dev/null || ulimit -s 262144   # the transformer demo needs a large stack
 OUT=tests/out
 mkdir -p "$OUT"
 pass=0; fail=0
@@ -38,14 +39,14 @@ for f in tests/pass/*.pk examples/*.pk; do run_file "$f"; done
 # Transformer demo (examples/lm): analytic vs numerical gradient, forward
 # pass vs an independent numpy implementation, and a short training run.
 lm=examples/lm/transformer.pk
-if "$PLANKC" --entry gradcheck "$lm" -o "$OUT/gc" 2>"$OUT/err"; then
+if "$PLANKC" -O3 --entry gradcheck "$lm" -o "$OUT/gc" 2>"$OUT/err"; then
   for seed in 42 5; do
-    res=$("$OUT/gc" "$seed" 37); err=$(sed -n 1p <<<"$res"); loss=$(sed -n 2p <<<"$res")
-    if awk -v e="$err" 'BEGIN { exit !(e < 1e-4) }'; then report ok
+    res=$("$OUT/gc" "$seed" 211); err=$(sed -n 1p <<<"$res"); loss=$(sed -n 2p <<<"$res")
+    if awk -v e="$err" 'BEGIN { exit !(e != "" && e + 0 < 1e-4) }'; then report ok
     else report fail "lm gradcheck seed $seed: max relative error $err"; fi
     if python3 -c 'import numpy' 2>/dev/null; then
       ref=$(python3 examples/lm/reference.py "$seed")
-      if awk -v a="$loss" -v b="$ref" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(d < 1e-12) }'
+      if awk -v a="$loss" -v b="$ref" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(a != "" && d < 1e-12) }'
       then report ok; else report fail "lm forward seed $seed: plankalkul $loss, numpy $ref"; fi
     else
       echo "note: numpy not installed, skipping the lm reference comparison"

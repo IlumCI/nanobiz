@@ -126,8 +126,9 @@ Zuse's A11–A13 (fractions, complex numbers) are rejected. Use `f64`, or a reco
 - **Records:** a record component must be selected by a constant.
 - **Range checks:** out-of-range indices are rejected at compile time when they are literals,
   and trap at run time otherwise.
-- **Floating-point literals in brackets:** inside brackets `5.3` is a path, so a
-  floating-point literal cannot appear there.
+- **Floating-point literals in selectors:** inside a component selector `X[...]`, `5.3` is a
+  path, so a floating-point literal cannot appear there. In statement blocks `[ ... ]` it is
+  a number.
 
 **Statements.**
 
@@ -182,6 +183,43 @@ The arrow may be written `→`, `->`, `⇒` or `=>`.
 | word → float | exact or rounded to nearest |
 | float → word | truncated toward zero and saturated at the target's range; NaN becomes 0 |
 | float → float | extended, or rounded to nearest |
+
+## Demo: a transformer language model
+
+`examples/lm/transformer.pk` (about 600 lines) is a character-level, decoder-only
+transformer written entirely in Plankalkül. It trains from scratch with hand-written
+backpropagation and then generates text autoregressively.
+
+| Part | Choice |
+|---|---|
+| Embedding | 28-symbol vocabulary; the embedding matrix is shared with the output layer (Press & Wolf, arXiv:1608.05859) |
+| Normalization | pre-norm RMSNorm (Zhang & Sennrich, arXiv:1910.07467) |
+| Attention | causal self-attention, 2 heads, rotary position embeddings (Su et al., arXiv:2104.09864) |
+| MLP | SwiGLU (Shazeer, arXiv:2002.05202) |
+| Sizes | context 16, width 16, MLP width 32, 3056 parameters in one flat vector |
+| Optimizer | AdamW (arXiv:1711.05101) for embeddings and gains; Muon for the hidden matrices (Nesterov momentum 0.95, 5 Newton–Schulz steps, update scale 0.2·√max(A,B), decoupled weight decay; Liu et al., arXiv:2502.16982) or AdamW everywhere |
+| Schedule | warm-up, then cosine decay; gradient-norm clipping at 1; batches of 4 random windows |
+| Arithmetic | exp, ln, √, sin/cos and the xorshift64* random generator are Plankalkül plans built from + − × ÷. The sigmoid plan is written in Zuse's 2D notation. |
+
+```
+examples/lm/run.sh 600 0 muon     # steps, temperature (0 = greedy), optimizer, [seed]
+optimizer: muon, steps: 600, temperature: 0
+loss by tenth of training: 2.728…,1.294…,0.659…,0.487…,0.377…,0.320…,0.281…,0.237…,0.232…,0.198…
+prompt + generated text:   konrad zuse designed the plankalkul between nineteen fortytwo and ninete
+```
+
+The corpus is two sentences repeated to fill 256 characters, so the model learns to
+recite them. Training for 600 steps takes about 2 s. At this size AdamW and Muon reach
+similar losses: 0.20–0.23 after 600 steps over three seeds.
+
+The demo is checked in three ways, all run by `tests/run.sh`:
+- **Gradient:** the entry plan `gradcheck` compares the backpropagated gradient of every
+  parameter with central differences. The largest relative error is about 1e-6, which is
+  the noise level of finite differences with h = 1e-5.
+- **Forward pass:** `examples/lm/reference.py`, an independent numpy implementation,
+  reproduces the loss at random parameters to within 1e-12, using the same random
+  generator.
+- **Training:** a 300-step run must reach a final loss below 0.8 and reproduce the corpus.
 
 ## Design
 

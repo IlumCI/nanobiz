@@ -35,7 +35,8 @@ package PK.Lexer is
    --
    --  After ':' and up to the next ']' the lexer is in type mode: numbers
    --  are plain decimal and 'x' separates dimensions (4x0 = 4.0). Inside
-   --  brackets, "5.3" is a component path, not a floating-point literal.
+   --  component selectors (X[...]), "5.3" is a component path, not a
+   --  floating-point literal; inside statement blocks it is a number.
 
    function Describe (T : Token) return String;
 

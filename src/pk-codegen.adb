@@ -219,6 +219,18 @@ package body PK.Codegen is
 
    function Function_Name (P : Plan) return String is ("@pk." & Label (P));
 
+   --  Byte size of a type as an LLVM constant expression.
+   function Size_Of (T : Ty) return String is
+     ("ptrtoint (ptr getelementptr (" & LLVM (T) & ", ptr null, i32 1) to i64)");
+
+   --  Copy a structure. memmove, because source and target may coincide.
+   procedure Copy (Dst, Src : String; T : Ty) is
+   begin
+      Declares.Include ("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)");
+      Emit ("call void @llvm.memmove.p0.p0.i64(ptr " & Dst & ", ptr " & Src & ", i64 "
+            & Size_Of (T) & ", i1 false)");
+   end Copy;
+
    ------------
    -- Places --
    ------------
@@ -513,12 +525,15 @@ package body PK.Codegen is
    procedure Assign (Target : Expr; V : String; From : Ty) is
       P : constant Place := Gen_Place (Target);
    begin
-      if Is_Scalar (Target.Ty) then
-         Store (P, Target.Ty, Convert (V, From, Target.Ty));
-      else
-         Store (P, Target.Ty, V);
-      end if;
+      Store (P, Target.Ty, Convert (V, From, Target.Ty));
    end Assign;
+
+   --  Structure assignment from the storage at Src.
+   procedure Assign_Structure (Target : Expr; Src : String) is
+      P : constant Place := Gen_Place (Target);
+   begin
+      Copy (To_String (P.Addr), Src, Target.Ty);
+   end Assign_Structure;
 
    procedure Gen_Stmts (V : Stmt_Vectors.Vector);
 
@@ -534,12 +549,19 @@ package body PK.Codegen is
                   for K in S.Targets.First_Index .. S.Targets.Last_Index loop
                      declare
                         RT : constant Ty := P.Results (K).Ty;
-                        V  : constant String := Load ((Addr => Outs (K), others => <>), RT);
                      begin
-                        Assign (S.Targets (K), V, RT);
+                        if Is_Scalar (RT) then
+                           Assign (S.Targets (K),
+                                   Load ((Addr => Outs (K), others => <>), RT), RT);
+                        else
+                           Assign_Structure (S.Targets (K), To_String (Outs (K)));
+                        end if;
                      end;
                   end loop;
                end;
+            elsif not Is_Scalar (S.Source.Ty) then
+               Assign_Structure (S.Targets.First_Element,
+                                 To_String (Gen_Place (S.Source).Addr));
             else
                declare
                   V : constant String := Gen_Value (S.Source);
@@ -695,7 +717,13 @@ package body PK.Codegen is
    procedure Local (Name : String; T : Ty) is
    begin
       Emit_Alloca (Name, LLVM (T));
-      Append (Inits, "  store " & LLVM (T) & " zeroinitializer, ptr " & Name & LF);
+      if Is_Scalar (T) then
+         Append (Inits, "  store " & LLVM (T) & " zeroinitializer, ptr " & Name & LF);
+      else
+         Declares.Include ("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)");
+         Append (Inits, "  call void @llvm.memset.p0.i64(ptr " & Name & ", i8 0, i64 "
+                 & Size_Of (T) & ", i1 false)" & LF);
+      end if;
    end Local;
 
    function Gen_Plan (P : Plan) return String is
@@ -734,13 +762,17 @@ package body PK.Codegen is
       Start_Block ("body");
       Gen_Stmts (P.Stmts);
       for X of P.Results loop
-         declare
-            V : constant String := New_Tmp;
-            T : constant String := LLVM (X.Ty);
-         begin
-            Emit (V & " = load " & T & ", ptr %R" & Img (X.Index));
-            Emit ("store " & T & " " & V & ", ptr %out.R" & Img (X.Index));
-         end;
+         if Is_Scalar (X.Ty) then
+            declare
+               V : constant String := New_Tmp;
+               T : constant String := LLVM (X.Ty);
+            begin
+               Emit (V & " = load " & T & ", ptr %R" & Img (X.Index));
+               Emit ("store " & T & " " & V & ", ptr %out.R" & Img (X.Index));
+            end;
+         else
+            Copy ("%out.R" & Img (X.Index), "%R" & Img (X.Index), X.Ty);
+         end if;
       end loop;
       Emit_Term ("ret void");
       return Assemble ("; plan " & Label (P) & LF

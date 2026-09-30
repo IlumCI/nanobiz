@@ -45,7 +45,13 @@ package body PK.Lexer is
       Line   : Positive := 1;
       Col    : Positive := 1;
       Depth  : Natural := 0;
-      Brack  : Natural := 0;
+      --  Open brackets: component selectors (after a variable, a loop
+      --  index or another selector) versus statement blocks. Only inside
+      --  a selector is "5.3" a component path rather than a number.
+      Kinds       : array (1 .. 256) of Boolean;   --  True = selector
+      Open        : Natural := 0;
+      Selectors   : Natural := 0;
+      Last_Closed : Boolean := False;              --  kind of the last ']'
       Types  : Boolean := False;
 
       function At_End return Boolean is (P > Source'Last);
@@ -129,7 +135,7 @@ package body PK.Lexer is
 
          --  Floating-point literal: digits '.' digits [exponent] or
          --  digits exponent; only outside brackets and types.
-         if Base = 10 and then not Types and then Brack = 0
+         if Base = 10 and then not Types and then Selectors = 0
            and then ((Ch = '.' and then Is_Digit (Ch (1)))
                      or else (Ch in 'e' | 'E'
                               and then (Is_Digit (Ch (1))
@@ -282,11 +288,31 @@ package body PK.Lexer is
                      end if;
                      Push (Tk_RParen, L, Cl);
                   when '[' =>
-                     Brack := @ + 1;
+                     declare
+                        Prev     : constant Token :=
+                          (if Result.Is_Empty then (others => <>) else Result.Last_Element);
+                        Selector : constant Boolean :=
+                          Prev.Kind = Tk_Var
+                          or else (Prev.Kind = Tk_Ident and then To_String (Prev.Text) /= "W")
+                          or else (Prev.Kind = Tk_RBrack and then Last_Closed);
+                     begin
+                        if Open = Kinds'Last then
+                           Error (L, Cl, "brackets nested too deeply");
+                        end if;
+                        Open := @ + 1;
+                        Kinds (Open) := Selector;
+                        if Selector then
+                           Selectors := @ + 1;
+                        end if;
+                     end;
                      Push (Tk_LBrack, L, Cl);
                   when ']' =>
-                     if Brack > 0 then
-                        Brack := @ - 1;
+                     if Open > 0 then
+                        Last_Closed := Kinds (Open);
+                        if Kinds (Open) then
+                           Selectors := @ - 1;
+                        end if;
+                        Open := @ - 1;
                      end if;
                      Types := False;
                      Push (Tk_RBrack, L, Cl);

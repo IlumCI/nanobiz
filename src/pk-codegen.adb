@@ -784,29 +784,6 @@ package body PK.Codegen is
    -- Main and I/O    --
    ---------------------
 
-   type Leaf_Info is record
-      Path : Unbounded_String;   --  GEP indices after "i64 0"
-      T    : Ty;
-   end record;
-
-   package Leaf_Vectors is new Ada.Containers.Vectors (Positive, Leaf_Info);
-
-   procedure Leaves (T : Ty; Prefix : String; Into : in out Leaf_Vectors.Vector) is
-   begin
-      case T.Kind is
-         when K_Word | K_Float =>
-            Into.Append (Leaf_Info'(Path => +Prefix, T => T));
-         when K_Array =>
-            for J in 0 .. T.Length - 1 loop
-               Leaves (T.Elem, Prefix & ", i64 " & Img (J), Into);
-            end loop;
-         when K_Record =>
-            for J in T.Fields'Range loop
-               Leaves (T.Fields (J), Prefix & ", i32 " & Img (J - T.Fields'First), Into);
-            end loop;
-      end case;
-   end Leaves;
-
    --  Read the next comma-separated value for a leaf of type T.
    function Read_Leaf (Cur : String; T : Ty) return String is
       V : constant String := New_Tmp;
@@ -834,6 +811,100 @@ package body PK.Codegen is
          Emit ("call void @pk.print(i64 " & Convert (V, T, U64) & ")");
       end if;
    end Print_Leaf;
+
+   --  Emit a counted loop over 0 .. Length - 1; Each receives the i64 index.
+   procedure For_Each (Length : Positive; Each : not null access procedure (Index : String)) is
+      Slot : constant String := New_Tmp;
+      Head : constant String := New_Label;
+      Body_L : constant String := New_Label;
+      Done : constant String := New_Label;
+      IV   : constant String := New_Tmp;
+      C    : constant String := New_Tmp;
+      Next : constant String := New_Tmp;
+   begin
+      Emit_Alloca (Slot, "i64");
+      Emit ("store i64 0, ptr " & Slot);
+      Start_Block (Head);
+      Emit (IV & " = load i64, ptr " & Slot);
+      Emit (C & " = icmp ult i64 " & IV & ", " & Img (Length));
+      Emit_Term ("br i1 " & C & ", label %" & Body_L & ", label %" & Done);
+      Start_Block (Body_L);
+      Each (IV);
+      Emit (Next & " = add i64 " & IV & ", 1");
+      Emit ("store i64 " & Next & ", ptr " & Slot);
+      Emit_Term ("br label %" & Head);
+      Start_Block (Done);
+   end For_Each;
+
+   --  Read the comma- or blank-separated leaves of a structure of type T
+   --  into the storage at Addr.
+   procedure Read_Into (T : Ty; Addr, Cur : String) is
+   begin
+      case T.Kind is
+         when K_Word | K_Float =>
+            Emit ("store " & LLVM (T) & " " & Read_Leaf (Cur, T) & ", ptr " & Addr);
+         when K_Record =>
+            for J in T.Fields'Range loop
+               declare
+                  G : constant String := New_Tmp;
+               begin
+                  Emit (G & " = getelementptr inbounds " & LLVM (T) & ", ptr " & Addr
+                        & ", i32 0, i32 " & Img (J - T.Fields'First));
+                  Read_Into (T.Fields (J), G, Cur);
+               end;
+            end loop;
+         when K_Array =>
+            declare
+               procedure Element (Index : String) is
+                  G : constant String := New_Tmp;
+               begin
+                  Emit (G & " = getelementptr inbounds " & LLVM (T) & ", ptr " & Addr
+                        & ", i64 0, i64 " & Index);
+                  Read_Into (T.Elem, G, Cur);
+               end Element;
+            begin
+               For_Each (T.Length, Element'Access);
+            end;
+      end case;
+   end Read_Into;
+
+   --  Print the leaves of the structure at Addr, comma-separated; Flag is
+   --  an i1 slot that is true before the first leaf of a result.
+   procedure Print_From (T : Ty; Addr, Flag : String) is
+   begin
+      case T.Kind is
+         when K_Word | K_Float =>
+            declare
+               V : constant String := New_Tmp;
+            begin
+               Emit ("call void @pk.comma(ptr " & Flag & ")");
+               Emit (V & " = load " & LLVM (T) & ", ptr " & Addr);
+               Print_Leaf (V, T);
+            end;
+         when K_Record =>
+            for J in T.Fields'Range loop
+               declare
+                  G : constant String := New_Tmp;
+               begin
+                  Emit (G & " = getelementptr inbounds " & LLVM (T) & ", ptr " & Addr
+                        & ", i32 0, i32 " & Img (J - T.Fields'First));
+                  Print_From (T.Fields (J), G, Flag);
+               end;
+            end loop;
+         when K_Array =>
+            declare
+               procedure Element (Index : String) is
+                  G : constant String := New_Tmp;
+               begin
+                  Emit (G & " = getelementptr inbounds " & LLVM (T) & ", ptr " & Addr
+                        & ", i64 0, i64 " & Index);
+                  Print_From (T.Elem, G, Flag);
+               end Element;
+            begin
+               For_Each (T.Length, Element'Access);
+            end;
+      end case;
+   end Print_From;
 
    function Gen_Main (P : Plan) return String is
       N    : constant Natural := Natural (P.Params.Length);
@@ -864,30 +935,21 @@ package body PK.Codegen is
             Cur   : constant String := New_Tmp;
             Arg_P : constant String := New_Tmp;
             Arg_V : constant String := New_Tmp;
+            Text  : constant String := New_Tmp;
          begin
             Emit_Alloca (Cur, "ptr");
             Emit (Arg_P & " = getelementptr inbounds ptr, ptr %argv, i64 " & Img (K));
             Emit (Arg_V & " = load ptr, ptr " & Arg_P);
-            Emit ("store ptr " & Arg_V & ", ptr " & Cur);
+            Emit (Text & " = call ptr @pk.arg(ptr " & Arg_V & ")");
+            Emit ("store ptr " & Text & ", ptr " & Cur);
             if Is_Scalar (X.Ty) then
                Add (LLVM (X.Ty) & " " & Read_Leaf (Cur, X.Ty));
             else
                declare
                   Storage : constant String := New_Tmp;
-                  Ls      : Leaf_Vectors.Vector;
                begin
                   Emit_Alloca (Storage, LLVM (X.Ty));
-                  Leaves (X.Ty, "", Ls);
-                  for L of Ls loop
-                     declare
-                        V : constant String := Read_Leaf (Cur, L.T);
-                        G : constant String := New_Tmp;
-                     begin
-                        Emit (G & " = getelementptr inbounds " & LLVM (X.Ty) & ", ptr "
-                              & Storage & ", i64 0" & To_String (L.Path));
-                        Emit ("store " & LLVM (L.T) & " " & V & ", ptr " & G);
-                     end;
-                  end loop;
+                  Read_Into (X.Ty, Storage, Cur);
                   Add ("ptr " & Storage);
                end;
             end if;
@@ -908,33 +970,11 @@ package body PK.Codegen is
 
       for K in P.Results.First_Index .. P.Results.Last_Index loop
          declare
-            RT    : constant Ty := P.Results (K).Ty;
-            Ls    : Leaf_Vectors.Vector;
-            First : Boolean := True;
+            Flag : constant String := New_Tmp;
          begin
-            Leaves (RT, "", Ls);
-            for L of Ls loop
-               declare
-                  Addr : Unbounded_String := Outs (K);
-                  V    : constant String := New_Tmp;
-               begin
-                  if not First then
-                     Emit ("call i32 @putchar(i32 44)");
-                  end if;
-                  First := False;
-                  if not Is_Scalar (RT) then
-                     declare
-                        G : constant String := New_Tmp;
-                     begin
-                        Emit (G & " = getelementptr inbounds " & LLVM (RT) & ", ptr "
-                              & To_String (Outs (K)) & ", i64 0" & To_String (L.Path));
-                        Addr := +G;
-                     end;
-                  end if;
-                  Emit (V & " = load " & LLVM (L.T) & ", ptr " & To_String (Addr));
-                  Print_Leaf (V, L.T);
-               end;
-            end loop;
+            Emit_Alloca (Flag, "i1");
+            Emit ("store i1 true, ptr " & Flag);
+            Print_From (P.Results (K).Ty, To_String (Outs (K)), Flag);
             Emit ("call i32 @putchar(i32 10)");
          end;
       end loop;
@@ -951,7 +991,13 @@ package body PK.Codegen is
       & "declare i32 @snprintf(ptr, i64, ptr, ...)" & LF
       & "declare i32 @dprintf(i32, ptr, ...)" & LF
       & "declare i32 @putchar(i32)" & LF
-      & "declare void @exit(i32) noreturn" & LF & LF
+      & "declare void @exit(i32) noreturn" & LF
+      & "declare ptr @fopen(ptr, ptr)" & LF
+      & "declare i32 @fseek(ptr, i64, i32)" & LF
+      & "declare i64 @ftell(ptr)" & LF
+      & "declare i64 @fread(ptr, i64, i64, ptr)" & LF
+      & "declare i32 @fclose(ptr)" & LF
+      & "declare ptr @malloc(i64)" & LF & LF
       & LLVM_String ("pk.fmt.u64", "%llu")
       & LLVM_String ("pk.fmt.i64", "%lld")
       & LLVM_String ("pk.fmt.g", "%.*g")
@@ -963,6 +1009,8 @@ package body PK.Codegen is
       & LLVM_String ("pk.msg.badnum", "input: invalid or missing number")
       & LLVM_String ("pk.msg.range", "input: value out of range for its parameter type")
       & LLVM_String ("pk.msg.extra", "input: too many values for a parameter")
+      & LLVM_String ("pk.msg.file", "input: cannot read the file named by an @ argument")
+      & LLVM_String ("pk.fmt.rb", "rb")
       & LF
       & "define internal void @pk.trap(ptr %msg) cold noinline noreturn {" & LF
       & "  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @pk.fmt.err, ptr %msg)" & LF
@@ -975,13 +1023,67 @@ package body PK.Codegen is
       & "  call void @exit(i32 2)" & LF
       & "  unreachable" & LF
       & "}" & LF & LF
-      --  Accept the character after a number (',' or end) and advance.
+      --  An argument "@FILE" stands for the contents of FILE.
+      & "define internal ptr @pk.arg(ptr %s) {" & LF
+      & "entry:" & LF
+      & "  %c = load i8, ptr %s" & LF
+      & "  %at = icmp eq i8 %c, 64" & LF
+      & "  br i1 %at, label %file, label %plain" & LF
+      & "plain:" & LF
+      & "  ret ptr %s" & LF
+      & "file:" & LF
+      & "  %name = getelementptr inbounds i8, ptr %s, i64 1" & LF
+      & "  %f = call ptr @fopen(ptr %name, ptr @pk.fmt.rb)" & LF
+      & "  %nf = icmp eq ptr %f, null" & LF
+      & "  br i1 %nf, label %bad, label %open" & LF
+      & "open:" & LF
+      & "  %r0 = call i32 @fseek(ptr %f, i64 0, i32 2)" & LF
+      & "  %n = call i64 @ftell(ptr %f)" & LF
+      & "  %neg = icmp slt i64 %n, 0" & LF
+      & "  br i1 %neg, label %bad, label %size" & LF
+      & "size:" & LF
+      & "  %r1 = call i32 @fseek(ptr %f, i64 0, i32 0)" & LF
+      & "  %n1 = add i64 %n, 1" & LF
+      & "  %buf = call ptr @malloc(i64 %n1)" & LF
+      & "  %nb = icmp eq ptr %buf, null" & LF
+      & "  br i1 %nb, label %bad, label %read" & LF
+      & "read:" & LF
+      & "  %got = call i64 @fread(ptr %buf, i64 1, i64 %n, ptr %f)" & LF
+      & "  %r2 = call i32 @fclose(ptr %f)" & LF
+      & "  %e = getelementptr inbounds i8, ptr %buf, i64 %got" & LF
+      & "  store i8 0, ptr %e" & LF
+      & "  ret ptr %buf" & LF
+      & "bad:" & LF
+      & "  call void @pk.trap(ptr @pk.msg.file)" & LF
+      & "  unreachable" & LF
+      & "}" & LF & LF
+      --  Skip blanks (space, tab, CR, LF) before a value.
+      & "define internal void @pk.skip(ptr %cur) {" & LF
+      & "entry:" & LF
+      & "  br label %loop" & LF
+      & "loop:" & LF
+      & "  %s = load ptr, ptr %cur" & LF
+      & "  %c = load i8, ptr %s" & LF
+      & "  %sp = icmp eq i8 %c, 32" & LF
+      & "  %ctl = icmp ult i8 %c, 32" & LF
+      & "  %nz = icmp ne i8 %c, 0" & LF
+      & "  %ctlnz = and i1 %ctl, %nz" & LF
+      & "  %blank = or i1 %sp, %ctlnz" & LF
+      & "  br i1 %blank, label %adv, label %done" & LF
+      & "adv:" & LF
+      & "  %s1 = getelementptr inbounds i8, ptr %s, i64 1" & LF
+      & "  store ptr %s1, ptr %cur" & LF
+      & "  br label %loop" & LF
+      & "done:" & LF
+      & "  ret void" & LF
+      & "}" & LF & LF
+      --  After a number: a comma is consumed; a blank or the end is left.
       & "define internal void @pk.sep(ptr %cur, ptr %e) {" & LF
       & "entry:" & LF
       & "  %c = load i8, ptr %e" & LF
       & "  %comma = icmp eq i8 %c, 44" & LF
-      & "  %nul = icmp eq i8 %c, 0" & LF
-      & "  %okc = or i1 %comma, %nul" & LF
+      & "  %ctl = icmp ule i8 %c, 32" & LF
+      & "  %okc = or i1 %comma, %ctl" & LF
       & "  br i1 %okc, label %done, label %bad" & LF
       & "done:" & LF
       & "  %e1 = getelementptr inbounds i8, ptr %e, i64 1" & LF
@@ -992,9 +1094,22 @@ package body PK.Codegen is
       & "  call void @pk.trap(ptr @pk.msg.badnum)" & LF
       & "  unreachable" & LF
       & "}" & LF & LF
+      --  Print a comma before every leaf of a result except the first.
+      & "define internal void @pk.comma(ptr %first) {" & LF
+      & "entry:" & LF
+      & "  %f = load i1, ptr %first" & LF
+      & "  store i1 false, ptr %first" & LF
+      & "  br i1 %f, label %done, label %put" & LF
+      & "put:" & LF
+      & "  %r = call i32 @putchar(i32 44)" & LF
+      & "  br label %done" & LF
+      & "done:" & LF
+      & "  ret void" & LF
+      & "}" & LF & LF
       & "define internal i64 @pk.next(ptr %cur, i64 %max) {" & LF
       & "entry:" & LF
       & "  %end = alloca ptr" & LF
+      & "  call void @pk.skip(ptr %cur)" & LF
       & "  %s = load ptr, ptr %cur" & LF
       & "  %c0 = load i8, ptr %s" & LF
       & "  %d0 = sub i8 %c0, 48" & LF
@@ -1018,6 +1133,7 @@ package body PK.Codegen is
       & "define internal i64 @pk.next_s(ptr %cur, i64 %min, i64 %max) {" & LF
       & "entry:" & LF
       & "  %end = alloca ptr" & LF
+      & "  call void @pk.skip(ptr %cur)" & LF
       & "  %s = load ptr, ptr %cur" & LF
       & "  %c0 = load i8, ptr %s" & LF
       & "  %minus = icmp eq i8 %c0, 45" & LF
@@ -1047,6 +1163,7 @@ package body PK.Codegen is
       & "define internal double @pk.next_f(ptr %cur) {" & LF
       & "entry:" & LF
       & "  %end = alloca ptr" & LF
+      & "  call void @pk.skip(ptr %cur)" & LF
       & "  %s = load ptr, ptr %cur" & LF
       & "  %c0 = load i8, ptr %s" & LF
       & "  %blank = icmp ule i8 %c0, 32" & LF
@@ -1064,6 +1181,7 @@ package body PK.Codegen is
       & "  unreachable" & LF
       & "}" & LF & LF
       & "define internal void @pk.end(ptr %cur) {" & LF
+      & "  call void @pk.skip(ptr %cur)" & LF
       & "  %s = load ptr, ptr %cur" & LF
       & "  %c = load i8, ptr %s" & LF
       & "  %more = icmp ne i8 %c, 0" & LF

@@ -40,7 +40,7 @@ for f in tests/pass/*.pk examples/*.pk; do run_file "$f"; done
 lm=examples/lm/transformer.pk
 if "$PLANKC" --entry gradcheck "$lm" -o "$OUT/gc" 2>"$OUT/err"; then
   for seed in 42 5; do
-    res=$("$OUT/gc" "$seed"); err=$(sed -n 1p <<<"$res"); loss=$(sed -n 2p <<<"$res")
+    res=$("$OUT/gc" "$seed" 37); err=$(sed -n 1p <<<"$res"); loss=$(sed -n 2p <<<"$res")
     if awk -v e="$err" 'BEGIN { exit !(e < 1e-4) }'; then report ok
     else report fail "lm gradcheck seed $seed: max relative error $err"; fi
     if python3 -c 'import numpy' 2>/dev/null; then
@@ -54,11 +54,11 @@ if "$PLANKC" --entry gradcheck "$lm" -o "$OUT/gc" 2>"$OUT/err"; then
 else
   report fail "$lm: compile error: $(cat "$OUT/err")"
 fi
-lmout=$(examples/lm/run.sh 300 0 muon 7 2>&1)
-last=$(sed -n 's/^loss by tenth of training: //p' <<<"$lmout" | awk -F, '{ print $NF }')
+lmout=$(examples/lm/run.sh 150 0 muon 7 2>&1)
+last=$(sed -n 's/^training loss per tenth: //p' <<<"$lmout" | awk -F, '{ print $NF }')
 if awk -v l="$last" 'BEGIN { exit !(l != "" && l < 0.8) }'; then report ok
 else report fail "lm training: final loss '$last'"; fi
-if grep -q 'konrad zuse designed' <<<"$lmout"; then report ok
+if grep -q 'konrad zuse designed the plankalkul' <<<"$lmout"; then report ok
 else report fail "lm generation: $(tail -1 <<<"$lmout")"; fi
 
 for f in tests/fail/*.pk; do

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""The 64-symbol character vocabulary of examples/lm/transformer.pk.
+"""The 96-symbol character vocabulary of examples/lm/transformer.pk.
 
-    0-25   a-z            (upper case is folded to lower case)
-    26     space          (tab and other blanks become spaces)
-    27     newline
-    28-37  0-9
-    38-63  . , ! ? ' " - : ; ( ) [ ] { } + = * / < > ^ _ $ % \\
+    0      newline
+    1-95   the printable ASCII characters, space (32) to '~' (126)
 
-Any other character becomes a space; runs of spaces are squeezed.
+Normalisation: Unicode is decomposed (NFKD) and accents dropped; typographic
+quotes, dashes and ellipses become their ASCII forms; tabs become 4 spaces;
+any other character becomes a space; runs of more than two newlines are
+shortened to two. Case and spacing are kept, so code survives unchanged.
 
 usage:
     text.py encode N [TEXT]    N codes, blank-separated; TEXT (or standard
@@ -17,17 +17,22 @@ usage:
 """
 import re
 import sys
+import unicodedata
 
-SYMBOLS = "abcdefghijklmnopqrstuvwxyz \n0123456789" + ".,!?'\"-:;()[]{}+=*/<>^_$%\\"
-assert len(SYMBOLS) == 64
+SYMBOLS = "\n" + "".join(chr(c) for c in range(32, 127))
+assert len(SYMBOLS) == 96
 CODE = {c: i for i, c in enumerate(SYMBOLS)}
+REPLACE = {"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-",
+           "—": "-", "…": "...", "×": "*", "÷": "/", "−": "-",
+           "≤": "<=", "≥": ">=", "≠": "!=", "\t": "    ", " ": " "}
 
 
 def normalize(text):
-    text = text.lower().replace("\r\n", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(REPLACE.get(c, c) for c in text)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
     text = "".join(c if c in CODE else " " for c in text)
-    text = re.sub(r" +", " ", text)
-    text = re.sub(r" *\n *", "\n", text)
     return re.sub(r"\n{3,}", "\n\n", text)
 
 

@@ -58,7 +58,7 @@ lmout=$(examples/lm/run.sh 150 0 muon 7 2>&1)
 last=$(sed -n 's/^training loss per tenth: //p' <<<"$lmout" | awk -F, '{ print $NF }')
 if awk -v l="$last" 'BEGIN { exit !(l != "" && l < 0.8) }'; then report ok
 else report fail "lm training: final loss '$last'"; fi
-if grep -q 'konrad zuse designed the plankalkul' <<<"$lmout"; then report ok
+if grep -q 'Konrad Zuse designed the Plankalkul' <<<"$lmout"; then report ok
 else report fail "lm generation: $(tail -1 <<<"$lmout")"; fi
 
 for f in tests/fail/*.pk; do

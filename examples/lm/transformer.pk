@@ -19,14 +19,15 @@
 #  cosine learning-rate decay, global gradient-norm clipping at 1, batches of
 #  8 windows of 32 characters.
 #
-#  Sizes: vocabulary 64 (see examples/lm/text.py), context 32, width 32,
-#  2 layers, 2 heads of 16, SwiGLU width 64; 22688 parameters.
+#  Sizes: vocabulary 96 (newline and printable ASCII, examples/lm/text.py),
+#  context 32, width 32, 2 layers, 2 heads of 16, SwiGLU width 64;
+#  23712 parameters.
 #
-#  Parameters live in one flat vector P (22688.f64). With the layer base
-#  b = 2048 + 10304·l (l = 0, 1):
+#  Parameters live in one flat vector P (23712.f64). With the layer base
+#  b = 3072 + 10304·l (l = 0, 1):
 #
 #     offset       size       parameter
-#        0         64 × 32    E    token embedding = output matrix
+#        0         96 × 32    E    token embedding = output matrix
 #      b + 0       32         g1   gain of the attention RMSNorm
 #      b + 32      32 × 32    Wq
 #      b + 1056    32 × 32    Wk
@@ -36,11 +37,11 @@
 #      b + 4160    32 × 64    W1   SwiGLU gate
 #      b + 6208    32 × 64    W3   SwiGLU value
 #      b + 8256    64 × 32    W2   SwiGLU output
-#    22656         32         gf   gain of the final RMSNorm
+#    23680         32         gf   gain of the final RMSNorm
 #
-#  Activations are 2048.f64 buffers holding a 32 × width matrix row-major
-#  (width 32 or 64), or a vector in their first entries. The forward
-#  pass returns all of them in a cache C (33.2048.f64); layer l uses slots
+#  Activations are 3072.f64 buffers holding a 32 × width matrix row-major
+#  (width 32, 64 or 96), or a vector in their first entries. The forward
+#  pass returns all of them in a cache C (33.3072.f64); layer l uses slots
 #  15·l + k:
 #
 #      0 X    layer input       5 V   values                    10 RS2 1/rms 2
@@ -52,28 +53,37 @@
 #  and slots 30 NF (final norm), 31 RSF (1/rms), 32 LG (logits).
 #
 #  Entry plans:
-#     lm         train, validate and generate   (examples/lm/run.sh,
-#                                                examples/lm/tinystories.sh)
-#     gradcheck  finite-difference check of the analytic gradient
+#     stage       one training stage from a checkpoint to a checkpoint
+#                 (examples/lm/curriculum.sh, examples/lm/run.sh)
+#     initparams  the initial checkpoint
+#     gradcheck   finite-difference check of the analytic gradient
 # ============================================================================
 
 
 # --------------------------------------------------------------------------
-#  Entry: train on a corpus of 2^20 characters, measure the loss on 65536
-#  held-out characters, then continue a 16-character prompt by 256 sampled
-#  characters. Large arguments are passed as @FILE.
-#    V0 training text   V1 validation text   V2 prompt   V3 seed   V4 steps
-#    V5 sampling temperature (0 = greedy)    V6 1 = Muon, 0 = AdamW only
-#  R0: mean training loss in each tenth of training; R1: validation loss at
-#  the end of each tenth; R2: generated text.
+#  Entry: one stage of training, starting from the parameters V3 (a
+#  checkpoint written by an earlier stage or by initparams).
+#    V0 training text, padded to 2^23 characters   V1 its length
+#    V2 validation text (65536 characters)         V3 initial parameters
+#    V4 seed   V5 steps   V6 peak learning rate    V7 1 = Muon, 0 = AdamW
+#    V8 16-character prompt                        V9 sampling temperature
+#  R0: mean training loss in each tenth of the stage; R1: validation loss at
+#  the end of each tenth; R2: the trained parameters; R3: 256 characters
+#  generated from the prompt. Large arguments are passed as @FILE.
 # --------------------------------------------------------------------------
-P1 lm (V0[:1048576.8.0], V1[:65536.8.0], V2[:16.8.0], V3[:64.0], V4[:32.0], V5[:f64], V6[:0]) → (R0[:10.f64], R1[:10.f64], R2[:256.8.0])
-  W1(1048576) [ ASSERT V0[i] < 64 ]
-  W1(65536) [ ASSERT V1[i] < 64 ]
-  W1(16) [ ASSERT V2[i] < 64 ]
+P1 stage (V0[:8388608.8.0], V1[:32.0], V2[:65536.8.0], V3[:23712.f64], V4[:64.0], V5[:32.0], V6[:f64], V7[:0], V8[:16.8.0], V9[:f64]) → (R0[:10.f64], R1[:10.f64], R2[:23712.f64], R3[:256.8.0])
+  ASSERT (V1 ≥ 33) ∧ (V1 ≤ 8388608)
+  W1(V1) [ ASSERT V0[i] < 96 ]
+  W1(65536) [ ASSERT V2[i] < 96 ]
+  W1(16) [ ASSERT V8[i] < 96 ]
   ropetab() → Z0[:512.f64]
-  train(V0, V1, V3, V4, Z0, V6) → Z1[:22688.f64], R0, R1, Z2[:64.0]
-  generate(Z1, V2, Z2, Z0, V5) → R2
+  train(V0, V1, V2, V3, V4, V5, Z0, V7, V6) → R2, R0, R1, Z1[:64.0]
+  generate(R2, V8, Z1, Z0, V9) → R3
+END
+
+# Entry: freshly initialised parameters, the checkpoint before stage one.
+P47 initparams (V0[:64.0]) → R0[:23712.f64]
+  init(V0) → R0, Z0[:64.0]
 END
 
 
@@ -84,11 +94,11 @@ END
 # --------------------------------------------------------------------------
 P2 gradcheck (V0[:64.0], V1[:16.0]) → (R0[:f64], R1[:f64], R2[:32.0])
   ropetab() → Z0[:512.f64]
-  init(V0) → Z1[:22688.f64], Z2[:64.0]
-  W1(22688) [ rng(Z2) → Z2, Z3[:f64]; Z1[i] + 0.2 × (Z3 - 0.5) → Z1[i] ]
-  W1(33) [ rng(Z2) → Z2, Z3; Z3 × 64.0 → Z4[:33.8.0][i] ]
-  fwdbwd(Z1, Z4, Z0) → Z5[:22688.f64], R1
-  W1(22688) [
+  init(V0) → Z1[:23712.f64], Z2[:64.0]
+  W1(23712) [ rng(Z2) → Z2, Z3[:f64]; Z1[i] + 0.2 × (Z3 - 0.5) → Z1[i] ]
+  W1(33) [ rng(Z2) → Z2, Z3; Z3 × 96.0 → Z4[:33.8.0][i] ]
+  fwdbwd(Z1, Z4, Z0) → Z5[:23712.f64], R1
+  W1(23712) [
     (i % V1 = 0) → [
       Z1[i] → Z6[:f64]
       Z6 + 0.00001 → Z1[i]
@@ -109,34 +119,37 @@ END
 #  Training
 # ==========================================================================
 
-# V0 training text, V1 validation text, V2 seed, V3 steps, V4 rotary table,
-# V5 Muon on/off. R0 trained parameters, R1 training loss per tenth,
-# R2 validation loss per tenth, R3 random state.
-P3 train (V0[:1048576.8.0], V1[:65536.8.0], V2[:64.0], V3[:32.0], V4[:512.f64], V5[:0]) → (R0[:22688.f64], R1[:10.f64], R2[:10.f64], R3[:64.0])
-  init(V2) → R0, R3
-  # Z0: norm gains, Z1: hidden matrices (bit structures of 22688 bits)
-  W1(22688) [
-    (i ≥ 22656) → 1 → Z0[:22688.0][i]
-    (i ≥ 2048) ∧ (i < 22656) → [
-      (i - 2048) % 10304 → Z3[:16.0]
+# V0 training text of length V1, V2 validation text, V3 initial parameters,
+# V4 seed, V5 steps, V6 rotary table, V7 Muon on/off, V8 peak learning rate.
+# R0 trained parameters, R1 training loss per tenth, R2 validation loss per
+# tenth, R3 random state. The optimiser state starts from zero.
+P3 train (V0[:8388608.8.0], V1[:32.0], V2[:65536.8.0], V3[:23712.f64], V4[:64.0], V5[:32.0], V6[:512.f64], V7[:0], V8[:f64]) → (R0[:23712.f64], R1[:10.f64], R2[:10.f64], R3[:64.0])
+  V3 → R0
+  V4 ⊕ 0x9E3779B97F4A7C15 → R3
+  (R3 = 0) → 1 → R3
+  # Z0: norm gains, Z1: hidden matrices (bit structures of 23712 bits)
+  W1(23712) [
+    (i ≥ 23680) → 1 → Z0[:23712.0][i]
+    (i ≥ 3072) ∧ (i < 23680) → [
+      (i - 3072) % 10304 → Z3[:16.0]
       (Z3 < 32) ∨ (Z3 ≥ 4128) ∧ (Z3 < 4160) → 1 → Z0[i]
-      ¬Z0[i] → 1 → Z1[:22688.0][i]
+      ¬Z0[i] → 1 → Z1[:23712.0][i]
     ]
   ]
   1.0 → Z4[:f64]                                      # β1^t
   1.0 → Z5[:f64]                                      # β2^t
-  V3 / 20 → Z6[:32.0]                                 # warm-up steps
+  V5 / 20 → Z6[:32.0]                                 # warm-up steps
   (Z6 = 0) → 1 → Z6
-  W1(V3) [
+  W1(V5) [
     # --- gradient of the mean loss over a batch of 8 random windows ---
-    W1(22688) [ 0.0 → Z7[:22688.f64][i] ]
+    W1(23712) [ 0.0 → Z7[:23712.f64][i] ]
     0.0 → Z8[:f64]
     W1(8) [
       rng(R3) → R3, Z9[:f64]
-      Z9 × 1048544.0 → Z10[:32.0]                     # window start
+      Z9 × (V1 - 32) → Z10[:32.0]                     # window start
       W1(33) [ V0[Z10 + i] → Z11[:33.8.0][i] ]
-      fwdbwd(R0, Z11, V4) → Z12[:22688.f64], Z13[:f64]
-      W1(22688) [ Z7[i] + Z12[i] → Z7[i] ]
+      fwdbwd(R0, Z11, V6) → Z12[:23712.f64], Z13[:f64]
+      W1(23712) [ Z7[i] + Z12[i] → Z7[i] ]
       Z8 + Z13 → Z8
     ]
     Z8 / 8.0 → Z8
@@ -144,25 +157,25 @@ P3 train (V0[:1048576.8.0], V1[:65536.8.0], V2[:64.0], V3[:32.0], V4[:512.f64], 
 
     # --- clip the global gradient norm at 1 ---
     0.0 → Z14[:f64]
-    W1(22688) [ Z7[i] × 0.125 → Z7[i]; Z14 + Z7[i] × Z7[i] → Z14 ]
+    W1(23712) [ Z7[i] × 0.125 → Z7[i]; Z14 + Z7[i] × Z7[i] → Z14 ]
     sqrt(Z14) → Z14
-    (Z14 > 1.0) → W1(22688) [ Z7[i] / Z14 → Z7[i] ]
+    (Z14 > 1.0) → W1(23712) [ Z7[i] / Z14 → Z7[i] ]
 
-    # --- learning rate: linear warm-up, cosine decay from 0.01 to 0.001 ---
-    (i0 < Z6) → 0.01 × (i0 + 1) / Z6 → Z15[:f64]
+    # --- learning rate: linear warm-up, cosine decay from V8 to V8/10 ---
+    (i0 < Z6) → V8 × (i0 + 1) / Z6 → Z15[:f64]
     (i0 ≥ Z6) → [
-      (i0 - Z6) / (V3 - Z6 + 0.0) → Z16[:f64]
+      (i0 - Z6) / (V5 - Z6 + 0.0) → Z16[:f64]
       sincos(3.141592653589793 × Z16) → Z17[:f64], Z18[:f64]
-      0.001 + 0.0045 × (1.0 + Z18) → Z15
+      V8 × (0.1 + 0.45 × (1.0 + Z18)) → Z15
     ]
 
     # --- AdamW: β1 = 0.9, β2 = 0.95, ε = 1e-8, weight decay 0.1 except gains ---
     Z4 × 0.9 → Z4
     Z5 × 0.95 → Z5
-    W1(22688) [
-      ¬(V5 ∧ Z1[i]) → [
-        0.9 × Z19[:22688.f64][i] + 0.1 × Z7[i] → Z19[i]
-        0.95 × Z20[:22688.f64][i] + 0.05 × Z7[i] × Z7[i] → Z20[i]
+    W1(23712) [
+      ¬(V7 ∧ Z1[i]) → [
+        0.9 × Z19[:23712.f64][i] + 0.1 × Z7[i] → Z19[i]
+        0.95 × Z20[:23712.f64][i] + 0.05 × Z7[i] × Z7[i] → Z20[i]
         0.1 → Z21[:f64]
         Z0[i] → 0.0 → Z21
         Z19[i] / (1.0 - Z4) / (sqrt(Z20[i] / (1.0 - Z5)) + 0.00000001) → Z22[:f64]
@@ -171,26 +184,26 @@ P3 train (V0[:1048576.8.0], V1[:65536.8.0], V2[:64.0], V3[:32.0], V4[:512.f64], 
     ]
 
     # --- Muon for the 14 hidden matrices ---
-    V5 → W1(2) [ W1(7) [
-      2048 + i1 × 10304 → Z23[:16.0]
+    V7 → W1(2) [ W1(7) [
+      3072 + i1 × 10304 → Z23[:16.0]
       32 → Z24[:8.0]; 32 → Z25[:8.0]
       (i2 < 4) → Z23 + 32 + 1024 × i2 → Z23
       (i2 = 4) ∨ (i2 = 5) → [ Z23 + 4160 + 2048 × (i2 - 4) → Z23; 64 → Z25 ]
       (i2 = 6) → [ Z23 + 8256 → Z23; 64 → Z24 ]
-      muon(R0, Z7, Z26[:22688.f64], Z23, Z24, Z25, Z15) → R0, Z26
+      muon(R0, Z7, Z26[:23712.f64], Z23, Z24, Z25, Z15) → R0, Z26
     ] ]
 
     # --- curves ---
-    i0 × 10 / V3 → Z27[:8.0]
+    i0 × 10 / V5 → Z27[:8.0]
     R1[Z27] + Z8 → R1[Z27]
     Z28[:10.f64][Z27] + 1.0 → Z28[Z27]
-    ((i0 + 1) × 10 / V3 ≠ Z27) ∨ (i0 + 1 = V3) → evaluate(R0, V1, V4) → R2[Z27]
+    ((i0 + 1) × 10 / V5 ≠ Z27) ∨ (i0 + 1 = V5) → evaluate(R0, V2, V6) → R2[Z27]
   ]
   W1(10) [ (Z28[i] > 0.0) → R1[i] / Z28[i] → R1[i] ]
 END
 
 # Mean loss on 64 disjoint 33-character windows of the validation text.
-P4 evaluate (V0[:22688.f64], V1[:65536.8.0], V2[:512.f64]) → R0[:f64]
+P4 evaluate (V0[:23712.f64], V1[:65536.8.0], V2[:512.f64]) → R0[:f64]
   W1(64) [
     i0 × 1023 → Z0[:32.0]
     W1(33) [ V1[Z0 + i] → Z1[:33.8.0][i] ]
@@ -202,17 +215,17 @@ END
 # One Muon step for the r × c matrix at offset V3 (Liu et al. 2025, eq. 4):
 #   M ← μM + G;  O = NewtonSchulz(μM + G);  W ← W − lr·(0.2·√max(r,c)·O + λW)
 # with μ = 0.95 and λ = 0.1. A tall matrix is orthogonalised transposed.
-P5 muon (V0[:22688.f64], V1[:22688.f64], V2[:22688.f64], V3[:16.0], V4[:8.0], V5[:8.0], V6[:f64]) → (R0[:22688.f64], R1[:22688.f64])
+P5 muon (V0[:23712.f64], V1[:23712.f64], V2[:23712.f64], V3[:16.0], V4[:8.0], V5[:8.0], V6[:f64]) → (R0[:23712.f64], R1[:23712.f64])
   V0 → R0
   V2 → R1
   W1(V4) [ W1(V5) [
     V3 + i0 × V5 + i1 → Z0[:16.0]
     0.95 × R1[Z0] + V1[Z0] → R1[Z0]
     0.95 × R1[Z0] + V1[Z0] → Z1[:f64]                 # Nesterov
-    (V4 ≤ V5) → Z1 → Z2[:2048.f64][i0 × V5 + i1]
+    (V4 ≤ V5) → Z1 → Z2[:3072.f64][i0 × V5 + i1]
     (V4 > V5) → Z1 → Z2[i1 × V4 + i0]
   ] ]
-  (V4 ≤ V5) → orth(Z2, V4, V5) → Z3[:2048.f64]
+  (V4 ≤ V5) → orth(Z2, V4, V5) → Z3[:3072.f64]
   (V4 > V5) → orth(Z2, V5, V4) → Z3
   V5 → Z4[:f64]
   (V4 > V5) → V4 → Z4
@@ -228,7 +241,7 @@ END
 # Newton–Schulz orthogonalisation of an r × c matrix, r ≤ c, r·c ≤ 2048:
 #   X ← G/‖G‖_F;  5 × { A = XXᵀ;  X ← aX + (bA + cA²)X }
 # with (a, b, c) = (3.4445, −4.7750, 2.0315).
-P6 orth (V0[:2048.f64], V1[:8.0], V2[:8.0]) → R0[:2048.f64]
+P6 orth (V0[:3072.f64], V1[:8.0], V2[:8.0]) → R0[:3072.f64]
   0.0 → Z0[:f64]
   W1(V1) [ W1(V2) [ Z0 + V0[i0 × V2 + i1] × V0[i0 × V2 + i1] → Z0 ] ]
   1.0 / (sqrt(Z0) + 0.0000001) → Z0
@@ -247,7 +260,7 @@ P6 orth (V0[:2048.f64], V1[:8.0], V2[:8.0]) → R0[:2048.f64]
     W1(V1) [ W1(V2) [                                 # X ← aX + BX
       0.0 → Z1
       W1(V1) [ Z1 + Z3[i1 × V1 + i3] × R0[i3 × V2 + i2] → Z1 ]
-      3.4445 × R0[i1 × V2 + i2] + Z1 → Z4[:2048.f64][i1 × V2 + i2]
+      3.4445 × R0[i1 × V2 + i2] + Z1 → Z4[:3072.f64][i1 × V2 + i2]
     ] ]
     Z4 → R0
   ]
@@ -256,21 +269,21 @@ END
 # Parameter initialisation: uniform with standard deviation 1/√fan-in,
 # halved for the residual projections Wo and W2; norm gains 1.
 # R1 is the random state after initialisation.
-P7 init (V0[:64.0]) → (R0[:22688.f64], R1[:64.0])
+P7 init (V0[:64.0]) → (R0[:23712.f64], R1[:64.0])
   V0 ⊕ 0x9E3779B97F4A7C15 → R1
   (R1 = 0) → 1 → R1
-  W1(22688) [
+  W1(23712) [
     rng(R1) → R1, Z0[:f64]
     (Z0 × 2.0 - 1.0) × 1.7320508075688772 → Z1[:f64]  # unit variance
     0.1767766952966369 → Z2[:f64]                      # fan-in 32
-    (i ≥ 2048) ∧ (i < 22656) → [
-      (i - 2048) % 10304 → Z3[:16.0]
+    (i ≥ 3072) ∧ (i < 23680) → [
+      (i - 3072) % 10304 → Z3[:16.0]
       (Z3 ≥ 3104) ∧ (Z3 < 4128) → 0.08838834764831845 → Z2   # Wo
       (Z3 ≥ 8256) → 0.0625 → Z2                             # W2: fan-in 64, halved
     ]
     Z1 × Z2 → R0[i]
-    (i ≥ 22656) → 1.0 → R0[i]
-    (i ≥ 2048) ∧ (i < 22656) ∧ ((Z3 < 32) ∨ (Z3 ≥ 4128) ∧ (Z3 < 4160)) → 1.0 → R0[i]
+    (i ≥ 23680) → 1.0 → R0[i]
+    (i ≥ 3072) ∧ (i < 23680) ∧ ((Z3 < 32) ∨ (Z3 ≥ 4128) ∧ (Z3 < 4160)) → 1.0 → R0[i]
   ]
 END
 
@@ -282,7 +295,7 @@ END
 # Continue the prompt V1 by 256 characters. Each step runs the model on the
 # last (at most) 32 characters and samples from softmax(logits / V4);
 # V4 = 0 is greedy.
-P8 generate (V0[:22688.f64], V1[:16.8.0], V2[:64.0], V3[:512.f64], V4[:f64]) → R0[:256.8.0]
+P8 generate (V0[:23712.f64], V1[:16.8.0], V2[:64.0], V3[:512.f64], V4[:f64]) → R0[:256.8.0]
   W1(16) [ V1[i] → Z0[:272.8.0][i] ]
   16 → Z1[:64.0]                                      # characters so far
   V2 → Z2[:64.0]                                      # random state
@@ -294,19 +307,19 @@ P8 generate (V0[:22688.f64], V1[:16.8.0], V2[:64.0], V3[:512.f64], V4[:f64]) →
       (Z3 + i < Z1) → Z0[Z3 + i] → Z4[i]
     ]
     Z1 - Z3 - 1 → Z5[:64.0]                           # position of the last character
-    forward(V0, Z4, V3) → Z6[:33.2048.f64]
+    forward(V0, Z4, V3) → Z6[:33.3072.f64]
     -1.0e300 → Z7[:f64]                               # greedy choice and max logit
     0 → Z8[:8.0]
-    W1(64) [ (Z6[32][Z5 × 64 + i] > Z7) → [ Z6[32][Z5 × 64 + i] → Z7; i → Z8 ] ]
+    W1(96) [ (Z6[32][Z5 × 96 + i] > Z7) → [ Z6[32][Z5 × 96 + i] → Z7; i → Z8 ] ]
     (V4 > 0.0) → [
       0.0 → Z9[:f64]
-      W1(64) [
-        exp((Z6[32][Z5 × 64 + i] - Z7) / V4) → Z10[:64.f64][i]
+      W1(96) [
+        exp((Z6[32][Z5 × 96 + i] - Z7) / V4) → Z10[:96.f64][i]
         Z9 + Z10[i] → Z9
       ]
       rng(Z2) → Z2, Z11[:f64]
       Z11 × Z9 → Z11                                  # inverse CDF
-      W1(64) [ (Z11 ≥ 0.0) → [ i → Z8; Z11 - Z10[i] → Z11 ] ]
+      W1(96) [ (Z11 ≥ 0.0) → [ i → Z8; Z11 - Z10[i] → Z11 ] ]
     ]
     Z8 → Z0[Z1]
     Z1 + 1 → Z1
@@ -319,17 +332,17 @@ END
 #  Forward pass
 # ==========================================================================
 
-P9 forward (V0[:22688.f64], V1[:32.8.0], V2[:512.f64]) → R0[:33.2048.f64]
+P9 forward (V0[:23712.f64], V1[:32.8.0], V2[:512.f64]) → R0[:33.3072.f64]
   W1(32) [                                            # X = E[token]
     V1[i0] → Z0[:64.0]
     W1(32) [ V0[Z0 × 32 + i1] → R0[0][i0 × 32 + i1] ]
   ]
   W1(2) [                                             # layer i0
-    2048 + i0 × 10304 → Z2[:16.0]                      # parameter base
+    3072 + i0 × 10304 → Z2[:16.0]                      # parameter base
     15 × i0 → Z3[:8.0]                                # cache base
     (i0 > 0) → R0[Z3 - 1] → R0[Z3]
     rmsnorm(V0, R0[Z3], Z2) → R0[Z3 + 1], R0[Z3 + 2]
-    lin(V0, R0[Z3 + 1], Z2 + 32, 32, 32) → Z1[:2048.f64]
+    lin(V0, R0[Z3 + 1], Z2 + 32, 32, 32) → Z1[:3072.f64]
     rope(Z1, V2, 0) → R0[Z3 + 3]
     lin(V0, R0[Z3 + 1], Z2 + 1056, 32, 32) → Z1
     rope(Z1, V2, 0) → R0[Z3 + 4]
@@ -344,15 +357,15 @@ P9 forward (V0[:22688.f64], V1[:32.8.0], V2[:512.f64]) → R0[:33.2048.f64]
     lin(V0, R0[Z3 + 13], Z2 + 8256, 64, 32) → Z1
     W1(1024) [ R0[Z3 + 8][i] + Z1[i] → R0[Z3 + 14][i] ]   # residual
   ]
-  rmsnorm(V0, R0[29], 22656) → R0[30], R0[31]
+  rmsnorm(V0, R0[29], 23680) → R0[30], R0[31]
   unembed(V0, R0[30]) → R0[32]
 END
 
 # Mean next-character cross-entropy of a 33-character sequence.
-P10 loss (V0[:22688.f64], V1[:33.8.0], V2[:512.f64]) → R0[:f64]
+P10 loss (V0[:23712.f64], V1[:33.8.0], V2[:512.f64]) → R0[:f64]
   W1(32) [ V1[i] → Z0[:32.8.0][i] ]
-  forward(V0, Z0, V2) → Z1[:33.2048.f64]
-  xent(Z1[32], V1) → R0, Z2[:2048.f64]
+  forward(V0, Z0, V2) → Z1[:33.3072.f64]
+  xent(Z1[32], V1) → R0, Z2[:3072.f64]
 END
 
 
@@ -361,25 +374,25 @@ END
 #  to every parameter, and the loss R1.
 # ==========================================================================
 
-P11 fwdbwd (V0[:22688.f64], V1[:33.8.0], V2[:512.f64]) → (R0[:22688.f64], R1[:f64])
+P11 fwdbwd (V0[:23712.f64], V1[:33.8.0], V2[:512.f64]) → (R0[:23712.f64], R1[:f64])
   W1(32) [ V1[i] → Z0[:32.8.0][i] ]
-  forward(V0, Z0, V2) → Z1[:33.2048.f64]
-  xent(Z1[32], V1) → R1, Z2[:2048.f64]                # Z2 = dLG
+  forward(V0, Z0, V2) → Z1[:33.3072.f64]
+  xent(Z1[32], V1) → R1, Z2[:3072.f64]                # Z2 = dLG
 
   # output layer (tied embedding) and final norm
-  unembedback(V0, Z1[30], Z2) → Z3[:2048.f64], Z4[:2048.f64]
-  W1(2048) [ R0[i] + Z4[i] → R0[i] ]
-  rmsback(V0, Z1[29], Z1[31], Z3, 22656) → Z5[:2048.f64], Z4
-  W1(32) [ R0[22656 + i] + Z4[i] → R0[22656 + i] ]  # Z5 = dY of the last layer
+  unembedback(V0, Z1[30], Z2) → Z3[:3072.f64], Z4[:3072.f64]
+  W1(3072) [ R0[i] + Z4[i] → R0[i] ]
+  rmsback(V0, Z1[29], Z1[31], Z3, 23680) → Z5[:3072.f64], Z4
+  W1(32) [ R0[23680 + i] + Z4[i] → R0[23680 + i] ]  # Z5 = dY of the last layer
 
   W2(2) [                                             # layer i0, last first
-    2048 + i0 × 10304 → Z10[:16.0]
+    3072 + i0 × 10304 → Z10[:16.0]
     15 × i0 → Z11[:8.0]
 
     # MLP block: Y = H + SwiGLU(N2)·W2
-    linback(V0, Z1[Z11 + 13], Z5, Z10 + 8256, 64, 32) → Z6[:2048.f64], Z4
+    linback(V0, Z1[Z11 + 13], Z5, Z10 + 8256, 64, 32) → Z6[:3072.f64], Z4
     W1(2048) [ R0[Z10 + 8256 + i] + Z4[i] → R0[Z10 + 8256 + i] ]
-    swigluback(Z1[Z11 + 11], Z1[Z11 + 12], Z6) → Z7[:2048.f64], Z8[:2048.f64]
+    swigluback(Z1[Z11 + 11], Z1[Z11 + 12], Z6) → Z7[:3072.f64], Z8[:3072.f64]
     linback(V0, Z1[Z11 + 9], Z7, Z10 + 4160, 32, 64) → Z3, Z4
     W1(2048) [ R0[Z10 + 4160 + i] + Z4[i] → R0[Z10 + 4160 + i] ]
     linback(V0, Z1[Z11 + 9], Z8, Z10 + 6208, 32, 64) → Z6, Z4
@@ -417,19 +430,19 @@ END
 
 
 # ==========================================================================
-#  Layers. X, Y are 32 × n matrices in 2048.f64 buffers; weights are read
+#  Layers. X, Y are 32 × n matrices in 3072.f64 buffers; weights are read
 #  from the parameter vector V0 at an offset.
 # ==========================================================================
 
 # Y = X·W, W = P[off ..] as nin × nout
-P12 lin (V0[:22688.f64], V1[:2048.f64], V2[:16.0], V3[:8.0], V4[:8.0]) → R0[:2048.f64]
+P12 lin (V0[:23712.f64], V1[:3072.f64], V2[:16.0], V3[:8.0], V4[:8.0]) → R0[:3072.f64]
   W1(32) [ W1(V4) [ W1(V3) [
     R0[i0 × V4 + i1] + V1[i0 × V3 + i2] × V0[V2 + i2 × V4 + i1] → R0[i0 × V4 + i1]
   ] ] ]
 END
 
 # dX = dY·Wᵀ (R0) and dW = Xᵀ·dY (R1)
-P13 linback (V0[:22688.f64], V1[:2048.f64], V2[:2048.f64], V3[:16.0], V4[:8.0], V5[:8.0]) → (R0[:2048.f64], R1[:2048.f64])
+P13 linback (V0[:23712.f64], V1[:3072.f64], V2[:3072.f64], V3[:16.0], V4[:8.0], V5[:8.0]) → (R0[:3072.f64], R1[:3072.f64])
   W1(32) [ W1(V4) [ W1(V5) [
     R0[i0 × V4 + i1] + V2[i0 × V5 + i2] × V0[V3 + i1 × V5 + i2] → R0[i0 × V4 + i1]
     R1[i1 × V5 + i2] + V1[i0 × V4 + i1] × V2[i0 × V5 + i2] → R1[i1 × V5 + i2]
@@ -437,22 +450,22 @@ P13 linback (V0[:22688.f64], V1[:2048.f64], V2[:2048.f64], V3[:16.0], V4[:8.0], 
 END
 
 # logits = NF·Eᵀ  (32 × 64)
-P14 unembed (V0[:22688.f64], V1[:2048.f64]) → R0[:2048.f64]
-  W1(32) [ W1(64) [ W1(32) [
-    R0[i0 × 64 + i1] + V1[i0 × 32 + i2] × V0[i1 × 32 + i2] → R0[i0 × 64 + i1]
+P14 unembed (V0[:23712.f64], V1[:3072.f64]) → R0[:3072.f64]
+  W1(32) [ W1(96) [ W1(32) [
+    R0[i0 × 96 + i1] + V1[i0 × 32 + i2] × V0[i1 × 32 + i2] → R0[i0 × 96 + i1]
   ] ] ]
 END
 
 # dNF = dLG·E (R0), dE = dLGᵀ·NF (R1)
-P15 unembedback (V0[:22688.f64], V1[:2048.f64], V2[:2048.f64]) → (R0[:2048.f64], R1[:2048.f64])
-  W1(32) [ W1(64) [ W1(32) [
-    R0[i0 × 32 + i2] + V2[i0 × 64 + i1] × V0[i1 × 32 + i2] → R0[i0 × 32 + i2]
-    R1[i1 × 32 + i2] + V2[i0 × 64 + i1] × V1[i0 × 32 + i2] → R1[i1 × 32 + i2]
+P15 unembedback (V0[:23712.f64], V1[:3072.f64], V2[:3072.f64]) → (R0[:3072.f64], R1[:3072.f64])
+  W1(32) [ W1(96) [ W1(32) [
+    R0[i0 × 32 + i2] + V2[i0 × 96 + i1] × V0[i1 × 32 + i2] → R0[i0 × 32 + i2]
+    R1[i1 × 32 + i2] + V2[i0 × 96 + i1] × V1[i0 × 32 + i2] → R1[i1 × 32 + i2]
   ] ] ]
 END
 
 # RMSNorm: N = X · rs · g, rs = 1/√(mean(X²) + 1e-5); R1[t] = rs of row t
-P16 rmsnorm (V0[:22688.f64], V1[:2048.f64], V2[:16.0]) → (R0[:2048.f64], R1[:2048.f64])
+P16 rmsnorm (V0[:23712.f64], V1[:3072.f64], V2[:16.0]) → (R0[:3072.f64], R1[:3072.f64])
   W1(32) [
     0.0 → Z0[:f64]
     W1(32) [ Z0 + V1[i0 × 32 + i1] × V1[i0 × 32 + i1] → Z0 ]
@@ -463,7 +476,7 @@ END
 
 # RMSNorm backward, with x̂ = X·rs and dx̂ = dN·g:
 #   dX = rs·(dx̂ − x̂·mean(dx̂·x̂)),  dg = Σ_t dN·x̂
-P17 rmsback (V0[:22688.f64], V1[:2048.f64], V2[:2048.f64], V3[:2048.f64], V4[:16.0]) → (R0[:2048.f64], R1[:2048.f64])
+P17 rmsback (V0[:23712.f64], V1[:3072.f64], V2[:3072.f64], V3[:3072.f64], V4[:16.0]) → (R0[:3072.f64], R1[:3072.f64])
   W1(32) [
     0.0 → Z0[:f64]
     W1(32) [
@@ -481,7 +494,7 @@ END
 # Rotary position embedding of 32 × 32 queries or keys: in each head of 16,
 # the pairs (2k, 2k+1) are rotated by t·θ_k. V2 = 1 applies the inverse
 # (transposed) rotation, which is the backward pass.
-P18 rope (V0[:2048.f64], V1[:512.f64], V2[:0]) → R0[:2048.f64]
+P18 rope (V0[:3072.f64], V1[:512.f64], V2[:0]) → R0[:3072.f64]
   V0 → R0
   W1(32) [ W1(2) [ W1(8) [
     i0 × 32 + i1 × 16 + 2 × i2 → Z0[:16.0]
@@ -506,7 +519,7 @@ P19 ropetab () → R0[:512.f64]
 END
 
 # Causal self-attention, 2 heads of 16: R0 = O, R1[1024h + 32t + u] = P_h[t][u]
-P20 attention (V0[:2048.f64], V1[:2048.f64], V2[:2048.f64]) → (R0[:2048.f64], R1[:2048.f64])
+P20 attention (V0[:3072.f64], V1[:3072.f64], V2[:3072.f64]) → (R0[:3072.f64], R1[:3072.f64])
   W1(2) [ W1(32) [                                    # head i0, query t = i1
     -1.0e300 → Z0[:f64]
     W1(i1 + 1) [                                      # key u = i2 ≤ t
@@ -533,7 +546,7 @@ END
 # Attention backward: from dO (V4) to dQ, dK, dV
 #   dP = dO·Vᵀ,  dS = P ⊙ (dP − rowsum(P ⊙ dP)) / √16,
 #   dQ = dS·K,  dK = dSᵀ·Q,  dV = Pᵀ·dO
-P21 attnback (V0[:2048.f64], V1[:2048.f64], V2[:2048.f64], V3[:2048.f64], V4[:2048.f64]) → (R0[:2048.f64], R1[:2048.f64], R2[:2048.f64])
+P21 attnback (V0[:3072.f64], V1[:3072.f64], V2[:3072.f64], V3[:3072.f64], V4[:3072.f64]) → (R0[:3072.f64], R1[:3072.f64], R2[:3072.f64])
   W1(2) [ W1(32) [                                    # head i0, query t = i1
     0.0 → Z1[:f64]
     W1(i1 + 1) [                                      # key u = i2
@@ -556,12 +569,12 @@ P21 attnback (V0[:2048.f64], V1[:2048.f64], V2[:2048.f64], V3[:2048.f64], V4[:20
 END
 
 # SwiGLU: U = silu(A1) ⊙ A3,  silu(z) = z·σ(z)
-P22 swiglu (V0[:2048.f64], V1[:2048.f64]) → R0[:2048.f64]
+P22 swiglu (V0[:3072.f64], V1[:3072.f64]) → R0[:3072.f64]
   W1(2048) [ V0[i] × sigmoid(V0[i]) × V1[i] → R0[i] ]
 END
 
 # dA1 = dU ⊙ A3 ⊙ σ(A1)(1 + A1(1 − σ(A1))),  dA3 = dU ⊙ silu(A1)
-P23 swigluback (V0[:2048.f64], V1[:2048.f64], V2[:2048.f64]) → (R0[:2048.f64], R1[:2048.f64])
+P23 swigluback (V0[:3072.f64], V1[:3072.f64], V2[:3072.f64]) → (R0[:3072.f64], R1[:3072.f64])
   W1(2048) [
     sigmoid(V0[i]) → Z0[:f64]
     V2[i] × V1[i] × Z0 × (1.0 + V0[i] × (1.0 - Z0)) → R0[i]
@@ -571,19 +584,19 @@ END
 
 # Mean cross-entropy of the logits (V0, 32 × 64) against the next characters
 # of V1, and its gradient R1 = (softmax − onehot) / 32
-P24 xent (V0[:2048.f64], V1[:33.8.0]) → (R0[:f64], R1[:2048.f64])
+P24 xent (V0[:3072.f64], V1[:33.8.0]) → (R0[:f64], R1[:3072.f64])
   W1(32) [
     -1.0e300 → Z0[:f64]
-    W1(64) [ (V0[i0 × 64 + i1] > Z0) → V0[i0 × 64 + i1] → Z0 ]
+    W1(96) [ (V0[i0 × 96 + i1] > Z0) → V0[i0 × 96 + i1] → Z0 ]
     0.0 → Z1[:f64]
-    W1(64) [
-      exp(V0[i0 × 64 + i1] - Z0) → R1[i0 × 64 + i1]
-      Z1 + R1[i0 × 64 + i1] → Z1
+    W1(96) [
+      exp(V0[i0 × 96 + i1] - Z0) → R1[i0 × 96 + i1]
+      Z1 + R1[i0 × 96 + i1] → Z1
     ]
     V1[i0 + 1] → Z2[:64.0]                            # target character
-    R0 + ln(Z1) + Z0 - V0[i0 × 64 + Z2] → R0
-    W1(64) [ R1[i0 × 64 + i1] / Z1 / 32.0 → R1[i0 × 64 + i1] ]
-    R1[i0 × 64 + Z2] - 0.03125 → R1[i0 × 64 + Z2]
+    R0 + ln(Z1) + Z0 - V0[i0 × 96 + Z2] → R0
+    W1(96) [ R1[i0 × 96 + i1] / Z1 / 32.0 → R1[i0 × 96 + i1] ]
+    R1[i0 × 96 + Z2] - 0.03125 → R1[i0 × 96 + Z2]
   ]
   R0 / 32.0 → R0
 END

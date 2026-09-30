@@ -14,8 +14,8 @@ import sys
 import numpy as np
 
 M64 = (1 << 64) - 1
-NV, T, D, H, DH, F, L = 64, 32, 32, 2, 16, 64, 2
-NP = NV * D + L * 10304 + D                            # 22688 parameters
+NV, T, D, H, DH, F, L = 96, 32, 32, 2, 16, 64, 2
+NP = NV * D + L * 10304 + D                            # 23712 parameters
 GF = NV * D + L * 10304                                # offset of gf
 
 

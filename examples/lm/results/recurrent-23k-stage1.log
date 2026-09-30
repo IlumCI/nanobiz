@@ -1,0 +1,5 @@
+stage 1: tinystories, 12000 steps, peak lr 0.01, Muon, thoughts 0, 868 s
+training loss per tenth:   2.2137430632027946,1.7822582269804483,1.7203709604674058,1.6814059876526202,1.6390330436351639,1.5987611276301872,1.5487123737766066,1.4954194662470335,1.4425801024261864,1.4131118713314215
+validation loss per tenth: 1.7283366049537163,1.6045344878667778,1.5826235691024386,1.5258054888348458,1.48007059321968,1.4539378466956874,1.4064622300978311,1.3374743637453417,1.3092937173990986,1.2776405020146324
+--- sample (temperature 0.8, r = 3) ---
+Once upon a time there was a good and shing carrised to tree share got she farly to he park to hee was very more walor in the bird and put the park you his bird song at the had make yoummy that's a mommy, and why loved the little boy and was he do not that water. They gri

@@ -1,0 +1,11 @@
+stage 2: reasoning, 12000 steps, peak lr 0.005, Muon, thoughts 0, 865 s
+training loss per tenth:   1.948261946647279,1.6357837363897254,1.5511575235990713,1.4951992809676153,1.4527199964008835,1.4242263765938086,1.3611538758298283,1.306641356520937,1.2550029695036686,1.2461724732789587
+validation loss per tenth: 1.7193543880696542,1.5360550735970155,1.4835950569071996,1.4442580597161199,1.363374756139242,1.2962656876900176,1.2706464892006648,1.206381306546439,1.1666344411280392,1.155128215479761
+--- sample (temperature 0.8, r = 3) ---
+Question: What is the prime find is the many probates be to keans, abeord?
+Answer: 1
+
+Question: Calculate 51 - -214 - 4194 =
+Answer: 4527
+
+Question: Find the prime numbers. The coe locand a the offe the computing contrainee folliciatists of arte numbers in the its lowest 

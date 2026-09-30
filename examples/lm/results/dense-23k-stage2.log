@@ -1,0 +1,8 @@
+stage 2: reasoning, 12000 steps, peak lr 0.005, Muon, 340 s
+training loss per tenth:   1.9355023857269353,1.6149965463360125,1.555293577951311,1.49156602191432,1.449826604523115,1.4061796841985366,1.379033593326367,1.3205376687423906,1.2775045097160338,1.245428075329564
+validation loss per tenth: 1.6312762484049332,1.5105550100026035,1.5002813372464059,1.416665179374711,1.406142229707974,1.339989463616729,1.28426434647293,1.2582702019568988,1.2036846457833017,1.184999517683628
+--- sample (temperature 0.8) ---
+Question: What is the provide the Least Common Divisor (GCD) of these numbers there are friends and the prime factorization of the follow that:
+Some conclude units.
+D: It of the simplified fraction D days, Sunday, Nodes.
+D: How many times does the letter  "d" appear in th

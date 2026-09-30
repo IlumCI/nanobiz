@@ -247,22 +247,32 @@ source.
 
 ### Results so far (nats per character)
 
-For comparison, `baselines.py` scores n-gram models on exactly the same validation
-predictions:
+Validation loss at the end of each stage. `baselines.py` scores n-gram models on exactly
+the same validation predictions.
 
-| Stage | Best n-gram | 23.7k dense model: validation, start → end of stage |
-|---|---|---|
-| tinystories | 1.043 (6-gram) | 1.597 → 1.276 |
-| reasoning | 0.897 (6-gram) | 1.631 → 1.185 |
-| gsm8k | 1.465 (5-gram) | 1.833 → 1.529 |
-| humanevalplus | – | 1.36 training loss; GSM8K validation 2.76 → 3.06 (forgetting) |
+| Stage | Best n-gram | 23.7k dense (2 blocks) | 23.7k recurrent + Coconut (≈ 4 blocks) |
+|---|---|---|---|
+| tinystories | 1.043 (6-gram) | 1.276 | 1.278 |
+| reasoning | 0.897 (6-gram) | 1.185 | 1.155 |
+| gsm8k | 1.465 (5-gram) | 1.529 | 1.544 |
+| coconut1–3 | – | – | 1.747 / 1.848 / 1.882 on GSM8K text written out in full |
+| humanevalplus (GSM8K validation, forgetting) | – | 3.06 | 3.03 |
+| wall time, stages 1–3 | – | 1,122 s | 2,894 s |
 
-These results are from an earlier 23,712-parameter configuration of the dense model
-(width 32, 2 layers). At this size and budget it stays behind the n-gram baselines, which
-have megabytes of training text to count. Its samples look like English, reasoning
-questions, GSM8K solutions with `<<a*b=c>>` calculator annotations, and Python, but carry
-little meaning. The 133k-parameter dense and recurrent curricula and the 23.7k
-recurrent curriculum are running; their results will be added here.
+**What the results show so far**
+- **Recurrent depth at 23.7k:** at equal parameters, one seed and this training budget,
+  it matches the dense model rather than beating it, at about 2.6× the compute.
+- **Coconut stages:** the model learns the format (`<bot>`, thoughts, `<eot>`, then an
+  answer-shaped continuation), and the loss on the text after `<eot>` falls from 1.75 to
+  1.29. The validation loss is measured on solutions written out in full, so its rise shows
+  the model moving away from that format. It does not show whether the continuous thoughts
+  help; that would need an ablation on held-out Coconut records, which has not been run.
+- **Against the baselines:** both small models stay behind the n-gram baselines.
+- **Samples:** they have the right shape (stories, reasoning-gym questions, GSM8K solutions
+  with `<<a*b=c>>` annotations, Python) but carry little meaning.
+
+The 133k-parameter dense and recurrent curricula are running; their results will be added
+here.
 
 ### Verification
 
